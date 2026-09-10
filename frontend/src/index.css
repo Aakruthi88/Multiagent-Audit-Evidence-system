@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg-dark: #0a0d14;
   --bg-card: #121824;
   --bg-card-hover: #1a2234;
@@ -354,7 +354,7 @@ tr:hover td {
   50% { opacity: 0.6; }
 }
 
-/* ── Verification Panel ────────────────────────────────────────────────────── */
+/* â”€â”€ Verification Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 /* Risk Score Gauge */
 .risk-gauge-wrap {
@@ -613,3 +613,14 @@ tr:hover td {
   box-shadow: 0 0 28px rgba(245,158,11,0.3);
 }
 
+
+.badge-warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.badge-failed {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}

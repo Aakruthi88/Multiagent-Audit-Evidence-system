@@ -2,20 +2,43 @@ from typing import TypedDict, Optional, List, Dict, Any
 from typing_extensions import Annotated
 import operator
 
+
 class BundleState(TypedDict):
-    bundle_id: str
-    user_query: Optional[str]                # Natural language prompt e.g. "Run 4-way verification on TXN-2026-001"
-    intent: Optional[str]                    # 'upload_and_extract' | 'verify_bundle' | 'investigate_discrepancies' | 'generate_report' | 'ask_clarification'
-    router_decision: Optional[Dict[str, Any]] # Structured RouterDecision output from LLM Router Agent
-    txn_reference: Optional[str]             # Transaction reference key extracted from query
-    doc_paths: Dict[str, str]                # {'purchase_order': path, 'invoice': path, ...}
-    extracted: Dict[str, Any]                # populated per-doc after extraction
+    # ── Core identifiers ────────────────────────────────────────────────────────
+    bundle_id: Optional[str]
+    user_query: Optional[str]            # Natural language prompt
+
+    # ── Intent routing ───────────────────────────────────────────────────────────
+    action: Optional[str]                # Determined by IntentRouterAgent or set directly by API:
+                                         # "new_bundle_run" | "status_query" | "reverify" | "regenerate_report"
+    intent: Optional[str]                # Legacy field kept for backward compat with existing RouterAgent
+    router_decision: Optional[Dict[str, Any]]   # Structured RouterDecision from existing RouterAgent
+    query_filters: Optional[Dict[str, Any]]     # e.g. {"status": "flagged"} for status_query action
+
+    # ── Document paths & extraction ──────────────────────────────────────────────
+    txn_reference: Optional[str]         # e.g. "TXN-2026-001"
+    doc_paths: Dict[str, str]            # {'purchase_order': path, 'invoice': path, ...}
+    extracted: Dict[str, Any]            # Populated per-doc after DocumentAgent runs
     missing_docs: List[str]
-    verification_run_id: Optional[str]       # UUID of the VerificationRun persisted to DB
-    verification_checks: Annotated[List[Any], operator.add]
-    discrepancies: Annotated[List[Any], operator.add]
+    extraction_confidence: float         # Min confidence across all documents in bundle (0.0–1.0)
+
+    # ── Search / evidence alignment ──────────────────────────────────────────────
+    retrieval_plan: Optional[Dict[str, Any]]
+    evidence_table: Optional[Dict[str, Any]]          # Cross-doc field alignment built by SearchAgent
+    vendor_similarity_matches: Optional[List[Any]]    # ChromaDB top-3 similar vendors from other bundles
+
+    # ── Verification results ─────────────────────────────────────────────────────
+    verification_run_id: Optional[str]
+    verification_checks: List[Any]
+    discrepancies: List[Any]
     risk_score: float
     needs_investigation: bool
+    verdict: Optional[str]               # "clean" | "anomaly"  — set by VerificationAgent
+    severity: Optional[str]              # "critical" | "warning" | None — set by VerificationAgent
+
+    # ── Investigation & reporting ────────────────────────────────────────────────
     investigation_findings: Optional[Dict[str, Any]]
     report: Optional[Dict[str, Any]]
-    errors: Annotated[List[str], operator.add]
+
+    # ── Error accumulation ───────────────────────────────────────────────────────
+    errors: List[str]

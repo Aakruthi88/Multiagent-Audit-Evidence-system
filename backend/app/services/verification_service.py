@@ -194,26 +194,28 @@ class VerificationService:
                                  "Verify applicable tax rate with tax compliance team.")
                 db.add(d); discrepancies.append(d)
 
-            # Internal arithmetic check on invoice
-            inv_lines = db.query(InvoiceLineItem).filter(InvoiceLineItem.invoice_id == inv.invoice_id).all()
-            if inv_lines:
-                computed_sub = sum(_d(l.line_total) for l in inv_lines)
-                expected_total = (computed_sub + _d(inv.tax_amount)).quantize(Decimal("0.01"))
-                actual_total = _d(inv.total_amount)
-                if abs(expected_total - actual_total) <= Decimal("1.00"):
+            # Internal arithmetic check on invoice: verify subtotal + tax == total
+            # Use stored inv.subtotal (authoritative from parser) rather than sum(line_items)
+            # because duplicate line items from multi-pass parsing would inflate the sum.
+            inv_subtotal = _d(inv.subtotal)
+            inv_tax = _d(inv.tax_amount)
+            inv_total = _d(inv.total_amount)
+            if inv_subtotal > Decimal("0"):
+                expected_total = (inv_subtotal + inv_tax).quantize(Decimal("0.01"))
+                if abs(expected_total - inv_total) <= Decimal("1.00"):
                     c = _check(run_id, "invoice_arithmetic_check", "pass",
-                               expected=expected_total, actual=actual_total,
-                               explanation="Invoice arithmetic is internally consistent")
+                               expected=expected_total, actual=inv_total,
+                               explanation="Invoice arithmetic is internally consistent (subtotal + tax = total)")
                     db.add(c); checks.append(c)
                 else:
                     c = _check(run_id, "invoice_arithmetic_check", "fail",
-                               expected=expected_total, actual=actual_total,
-                               variance=abs(expected_total - actual_total),
+                               expected=expected_total, actual=inv_total,
+                               variance=abs(expected_total - inv_total),
                                severity="high",
-                               explanation=f"Invoice subtotal+tax={expected_total} ≠ stated total={actual_total}")
+                               explanation=f"Invoice subtotal+tax={expected_total} ≠ stated total={inv_total}")
                     db.add(c); db.flush(); checks.append(c)
                     d = _discrepancy(run_id, c.check_id, "amount_mismatch", "high",
-                                     "Invoice line items do not sum to the stated invoice total.",
+                                     "Invoice stated total does not equal subtotal + tax amount.",
                                      "Request a corrected invoice from the vendor.")
                     db.add(d); discrepancies.append(d)
         else:

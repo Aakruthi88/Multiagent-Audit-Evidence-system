@@ -50,8 +50,8 @@ _RE_NUM_TXNS        = re.compile(r'(?:Number|No\.?)\s*of\s*Transactions\s*[:\-]?
 # Transaction row patterns
 _RE_TXN_DATE  = re.compile(r'^(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4})\s+')
 _RE_AMOUNT    = re.compile(r'[\d,]+\.\d{2}')
-_RE_PAY_REF   = re.compile(r'Ref(\d+)', re.I)
-_RE_INV_REF   = re.compile(r'(INV\d+)', re.I)
+_RE_PAY_REF   = re.compile(r'\b(?:REF|REFERENCE)\s*[#:\-_]?\s*([A-Za-z0-9]{4,30})\b', re.I)
+_RE_INV_REF   = re.compile(r'\b(?:INV|INVOICE)\s*[#:\-_/]?\s*([A-Za-z0-9\-_/]{3,30})\b', re.I)
 
 # Summary markers — never treat these as transaction rows
 _SUMMARY_MARKERS = [

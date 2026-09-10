@@ -1,8 +1,11 @@
 from typing import Optional, List
 from uuid import UUID
+from pathlib import Path
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, BackgroundTasks, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.models import (
     AuditBundle, Document, PurchaseOrder, Invoice, GRN, BankStatement, AgentExecutionLog
@@ -221,4 +224,75 @@ def get_extraction_review(
         "status": bundle.status,
         "document_reviews": reviews
     }
+
+
+@router.get("/{bundle_id}/files")
+def list_bundle_files(
+    bundle_id: UUID
+):
+    """
+    GET /api/v1/bundles/{bundle_id}/files
+    Discovers and lists existing PDF files stored in storage/bundles/{bundle_id}/.
+    """
+    bundle_dir = (settings.STORAGE_DIR / "bundles" / str(bundle_id)).resolve()
+    if not bundle_dir.exists() or not bundle_dir.is_dir():
+        return {"bundle_id": str(bundle_id), "files": []}
+
+    DOC_TYPE_LABELS = {
+        "invoice": "Invoice",
+        "purchase_order": "Purchase Order",
+        "grn": "GRN",
+        "bank_statement": "Bank Statement"
+    }
+
+    files = []
+    for file_path in bundle_dir.glob("*.pdf"):
+        fname = file_path.name
+        matched_label = None
+        matched_type = None
+        for dtype, label in DOC_TYPE_LABELS.items():
+            if fname.startswith(f"{dtype}_") or dtype in fname.lower():
+                matched_label = label
+                matched_type = dtype
+                break
+        if not matched_label:
+            matched_label = fname.replace(".pdf", "").replace("_", " ").title()
+            matched_type = "document"
+
+        files.append({
+            "filename": fname,
+            "doc_type": matched_type,
+            "label": matched_label,
+            "size_bytes": file_path.stat().st_size,
+            "url": f"{settings.API_V1_STR}/bundles/{bundle_id}/files/{fname}"
+        })
+
+    order = {"invoice": 1, "purchase_order": 2, "grn": 3, "bank_statement": 4}
+    files.sort(key=lambda x: (order.get(x["doc_type"], 99), x["filename"]))
+
+    return {"bundle_id": str(bundle_id), "files": files}
+
+
+@router.get("/{bundle_id}/files/{filename}")
+def get_bundle_file(
+    bundle_id: UUID,
+    filename: str
+):
+    """
+    GET /api/v1/bundles/{bundle_id}/files/{filename}
+    Safely serves the existing PDF file from storage/bundles/{bundle_id}/.
+    """
+    bundle_dir = (settings.STORAGE_DIR / "bundles" / str(bundle_id)).resolve()
+    target_file = (bundle_dir / filename).resolve()
+
+    if not str(target_file).startswith(str(bundle_dir)) or not target_file.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        path=str(target_file),
+        media_type="application/pdf",
+        filename=filename,
+        content_disposition_type="inline"
+    )
+
 

@@ -247,7 +247,12 @@ class VerificationCheck(Base):
     __tablename__ = 'verification_checks'
 
     check_id = Column(GUID, primary_key=True, default=uuid.uuid4)
-    run_id = Column(GUID, ForeignKey('verification_runs.run_id', ondelete='CASCADE'), nullable=False)
+    bundle_id = Column(GUID, ForeignKey('audit_bundles.bundle_id'), nullable=True)
+    run_id = Column(GUID, ForeignKey('verification_runs.run_id', ondelete='CASCADE'), nullable=True)
+    check_name = Column(String, nullable=True)
+    doc_types_involved = Column(JSON, nullable=True)
+    confidence = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     check_type = Column(String, nullable=False)
     status = Column(String, nullable=False)  # pass|warning|fail|not_applicable
     expected_value = Column(Text, nullable=True)
@@ -295,3 +300,27 @@ class Report(Base):
     file_path = Column(Text, nullable=True)
     content_json = Column(JSON, nullable=False)
     generated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AuditReport(Base):
+    __tablename__ = 'audit_reports'
+
+    report_id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    bundle_id = Column(GUID, ForeignKey('audit_bundles.bundle_id'), nullable=True)
+    summary = Column(Text, nullable=True)
+    verdict = Column(String, nullable=True)
+    report_json = Column(JSON, nullable=True)
+    report_pdf_path = Column(Text, nullable=True)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+
+class AgentRunLog(Base):
+    __tablename__ = 'agent_run_log'
+
+    run_id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    bundle_id = Column(String, nullable=True)
+    agent_name = Column(String, nullable=False)
+    input_state = Column(JSON, nullable=True)
+    output_state = Column(JSON, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    status = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

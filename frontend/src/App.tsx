@@ -3,9 +3,10 @@ import { Navbar } from './components/Navbar';
 import { BundleUpload } from './pages/BundleUpload';
 import { Dashboard } from './pages/Dashboard';
 import { BundleDetail } from './pages/BundleDetail';
+import { AskQuery } from './pages/AskQuery';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'dashboard' | 'detail'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'dashboard' | 'detail' | 'ask'>('dashboard');
   const [selectedBundleId, setSelectedBundleId] = useState<string | undefined>(undefined);
 
   const handleUploadSuccess = (bundleId: string) => {
@@ -33,6 +34,10 @@ export const App: React.FC = () => {
 
         {activeTab === 'dashboard' && (
           <Dashboard onSelectBundle={handleSelectBundle} />
+        )}
+
+        {activeTab === 'ask' && (
+          <AskQuery />
         )}
 
         {activeTab === 'detail' && selectedBundleId && (

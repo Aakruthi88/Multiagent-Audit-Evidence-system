@@ -15,12 +15,15 @@ class Settings(BaseSettings):
     )
     
     # LLM Services
+    GEMINI_API_KEY: str = Field(default="", description="Google Gemini API Key")
+    GEMINI_MODEL: str = Field(default="gemini-3.6-flash", description="Google Gemini Model")
+
     OPENROUTER_API_KEY: str = Field(default="", description="OpenRouter API Key")
-    OPENROUTER_MODEL: str = Field(default="google/gemini-2.5-flash", description="Primary OpenRouter Model")
+    OPENROUTER_MODEL: str = Field(default="meta-llama/llama-3.1-8b-instruct:free", description="Primary OpenRouter Model (free tier)")
     OPENROUTER_BASE_URL: str = Field(default="https://openrouter.ai/api/v1", description="OpenRouter Base URL")
     
     OLLAMA_HOST: str = Field(default="http://localhost:11434", description="Ollama local host URL")
-    OLLAMA_MODEL: str = Field(default="llama3", description="Ollama model fallback")
+    OLLAMA_MODEL: str = Field(default="llama2:latest", description="Ollama model fallback")
     
     # Storage
     STORAGE_DIR: Path = Field(

@@ -18,9 +18,18 @@ def document_understanding_node(state: BundleState) -> BundleState:
 
     try:
         documents = db.query(Document).filter(Document.bundle_id == bundle_id).all()
-        
+
+        # ── FIX 4: Surface "extracting" status immediately so the UI stops
+        #    showing "uploaded" while the pipeline is running ─────────────────
+        bundle = db.query(AuditBundle).filter(AuditBundle.bundle_id == bundle_id).first()
+        if bundle and bundle.status == "uploaded":
+            bundle.status = "extracting"
+            db.commit()
+            logger.info(f"[Document Understanding Agent] Bundle {bundle_id} status -> extracting")
+
         for doc in documents:
             logger.info(f"[Document Understanding Agent] Processing {doc.doc_type} for bundle {bundle_id}")
+
             
             # Step 1: Extract PDF text if raw_text is missing
             if not doc.raw_text:

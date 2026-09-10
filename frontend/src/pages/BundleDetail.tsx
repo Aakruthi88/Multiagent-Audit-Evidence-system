@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { getBundle, getBundleTrace, getLatestVerificationRun } from '../api/endpoints';
+import { runAction, getBundle, getBundleTrace, getLatestVerificationRun } from '../api/endpoints';
 import { AuditBundle, AgentLog, VerificationRun } from '../types';
 import { DocumentPreviewCard } from '../components/DocumentPreviewCard';
 import { VerificationPanel } from '../components/VerificationPanel';
@@ -27,6 +27,8 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
   const [bundle, setBundle] = useState<AuditBundle | null>(null);
   const [logs, setLogs] = useState<AgentLog[]>([]);
   const [existingRun, setExistingRun] = useState<VerificationRun | null>(null);
+  const [runReport, setRunReport] = useState<any | null>(null);
+  const [runLoading, setRunLoading] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const loadData = useCallback(async () => {
@@ -149,6 +151,94 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
 
       {/* ── Verification Panel ─────────────────────────────────────────────── */}
       <VerificationPanel bundleId={bundleId} initialRun={existingRun} />
+      {/* Vendor Similarity Matches (ChromaDB A1 payoff) */}
+      {existingRun && (
+        <div className="card" style={{ marginTop: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+            <span style={{ fontSize: "1.1rem" }}>??</span>
+            <h3 style={{ fontSize: "1.05rem", fontWeight: 700 }}>Similar Vendors in Other Bundles</h3>
+            <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 9999 }}>ChromaDB vector similarity</span>
+          </div>
+          {bundle.extracted_summary?.vendor_similarity_matches?.length > 0 ? (
+            <div className="table-wrapper">
+              <table>
+                <thead><tr><th>Bundle ID</th><th>Vendor Name</th><th>Similarity Score</th></tr></thead>
+                <tbody>
+                  {(bundle.extracted_summary?.vendor_similarity_matches || []).map((m: any, i: number) => (
+                    <tr key={i}>
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: "0.8rem" }}>{m.bundle_id?.slice(0, 8)}...</td>
+                      <td style={{ fontWeight: 600 }}>{m.vendor_name}</td>
+                      <td>
+                        <span style={{
+                          padding: "2px 10px", borderRadius: 9999, fontSize: "0.8rem", fontWeight: 700,
+                          background: m.similarity_score > 0.8 ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.12)",
+                          color: m.similarity_score > 0.8 ? "#f87171" : "#fbbf24",
+                        }}>
+                          {(m.similarity_score * 100).toFixed(1)}%
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>No similar vendors found in other bundles (vector search returned no matches).</p>
+          )}
+        </div>
+      )}
+
+      {/* Run Full Pipeline Button + Report */}
+      <div className="card" style={{ marginTop: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <h3 style={{ fontSize: "1.05rem", fontWeight: 700 }}>AI Audit Report</h3>
+          <button
+            id="run-pipeline-btn"
+            className="btn btn-primary"
+            disabled={runLoading}
+            onClick={async () => {
+              setRunLoading(true);
+              try {
+                const result = await runAction(bundleId, "new_bundle_run");
+                setRunReport(result.report);
+              } catch (e) { console.error(e); }
+              finally { setRunLoading(false); loadData(); }
+            }}
+          >
+            {runLoading ? "Running pipeline..." : "? Run Full Pipeline"}
+          </button>
+        </div>
+        {runReport ? (
+          <div>
+            <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+              <div style={{ padding: "10px 16px", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border-color)" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase" }}>Verdict</div>
+                <div style={{ fontSize: "1.1rem", fontWeight: 700, color: runReport.verdict === "clean" ? "#34d399" : "#f87171" }}>{runReport.verdict?.toUpperCase() || "�"}</div>
+              </div>
+              <div style={{ padding: "10px 16px", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border-color)" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase" }}>Risk Score</div>
+                <div style={{ fontSize: "1.1rem", fontWeight: 700, color: (runReport.risk_score || 0) > 50 ? "#f87171" : "#34d399" }}>{runReport.risk_score ?? "�"}</div>
+              </div>
+              <div style={{ padding: "10px 16px", borderRadius: "var(--radius-md)", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border-color)" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase" }}>Checks Passed</div>
+                <div style={{ fontSize: "1.1rem", fontWeight: 700 }}>{runReport.checks_passed ?? "�"} / {runReport.checks_total ?? "�"}</div>
+              </div>
+            </div>
+            {runReport.narrative && (
+              <div style={{ padding: 14, background: "rgba(255,255,255,0.03)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-color)", fontSize: "0.88rem", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                {runReport.narrative}
+              </div>
+            )}
+            {runReport.note && !runReport.narrative && (
+              <div style={{ padding: 14, background: "rgba(16,185,129,0.06)", borderRadius: "var(--radius-md)", border: "1px solid rgba(16,185,129,0.2)", fontSize: "0.88rem", color: "#34d399" }}>
+                {runReport.note}
+              </div>
+            )}
+          </div>
+        ) : (
+          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>Click "Run Full Pipeline" to trigger the LangGraph audit and generate a report.</p>
+        )}
+      </div>
 
       {/* Agent Execution Trace */}
       <div className="card" style={{ marginTop: 24 }}>
@@ -204,3 +294,4 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
     </div>
   );
 };
+

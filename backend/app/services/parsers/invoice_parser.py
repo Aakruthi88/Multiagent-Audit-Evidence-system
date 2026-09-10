@@ -37,6 +37,19 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# LLM key guard — rejects empty strings AND well-known placeholder values
+# ---------------------------------------------------------------------------
+
+def _has_valid_llm_key() -> bool:
+    """Return True only when OPENROUTER_API_KEY looks like a real key."""
+    key = (settings.OPENROUTER_API_KEY or "").strip()
+    if not key:
+        return False
+    if key.lower() in ("your_openrouter_api_key_here", "changeme", "placeholder", "sk-placeholder"):
+        return False
+    return True
+
+# ---------------------------------------------------------------------------
 # LLM Prompts
 # ---------------------------------------------------------------------------
 
@@ -195,25 +208,96 @@ def _extract_vendor(text: str, doc_label: str = "Invoice") -> Optional[str]:
                 return cand
 
     # Priority 2: First non-header lines before buyer section
+    # 
+    _VENDOR_LABEL_RE = re.compile(
+    r'(?:Supplier\s*Name|Vendor\s*Name|Supplier|Vendor|Sold\s*By|Seller|From)\s*[:\-]\s*([^\n]+)',
+    re.I
+)
+
+# NEW: a line that is ONLY a wrapped company suffix (e.g. "Ltd" alone on its own
+# line, because the PDF wrapped "...Pvt Ltd" across two lines)
+_COMPANY_CONTINUATION_RE = re.compile(
+    r'^(?:Ltd\.?|Limited|LLC|Inc\.?|Corp\.?|Pvt\.?\s*Ltd\.?|Private\s*Limited)$', re.I
+)
+
+
+def _get_buyer_line_index(lines: List[str]) -> int:
+    for i, line in enumerate(lines):
+        if _BUYER_SECTION_RE.search(line):
+            return i
+    return len(lines)
+
+
+def _maybe_join_next_line(lines: List[str], idx: int) -> str:
+    """If the next line is just a wrapped company suffix, join it onto this line."""
+    line = lines[idx]
+    if idx + 1 < len(lines) and _COMPANY_CONTINUATION_RE.match(lines[idx + 1].strip()):
+        return f"{line} {lines[idx + 1].strip()}"
+    return line
+
+
+def _clean_company_name(name: str) -> Optional[str]:
+    if not name:
+        return None
+    name = re.sub(
+        r'^(?:Supplier\s*Name|Supplier|Vendor\s*Name|Vendor|From|Company|Seller|Sold\s*By)\s*[:\-]?\s*',
+        '', name, flags=re.I
+    )
+    name = re.split(
+        r'(?i)\b(?:Phone|Tel|Email|Address|PO\b|Date|Bill|Ship|Attn|Contact|H\.No|H-|Fax|GST|GSTIN|Due)\b',
+        name
+    )[0]
+    name = name.strip(' :,;-\n\r\t')
+    return name if len(name) > 2 else None
+
+
+def _extract_vendor(text: str, doc_label: str = "Invoice") -> Optional[str]:
+    """
+    Extract vendor/supplier name from invoice text.
+    Vendor = the SELLER at the top of the invoice.
+    Returns None if not confidently identified.
+    """
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+    # Find the boundary where buyer section starts
+    buyer_idx = _get_buyer_line_index(lines)
+
+    # Also look for Invoice # line as an upper bound
+    for i, line in enumerate(lines):
+        if re.search(r'\bINVOICE\s*(?:#|NO|NUMBER)\b', line, re.I):
+            if i > 3:
+                buyer_idx = min(buyer_idx, i)
+            break
+
+    # Priority 1: Explicit label
+    m = _VENDOR_LABEL_RE.search(text)
+    if m:
+        label_line_idx = text[:m.start()].count('\n')
+        if label_line_idx < buyer_idx + 2:
+            cand = _clean_company_name(m.group(1))
+            if cand:
+                _log_field(doc_label, "vendor_name", "explicit_label", m.group(0), cand, "ok")
+                return cand
+
+    # Priority 2: First non-header lines before buyer section
     skip_re = re.compile(
         r'^(INVOICE|TAX\s*INVOICE|STATEMENT|PAGE|PHONE|EMAIL|HTTP|WWW|GST|GSTIN)',
         re.I
     )
-    for line in lines[:buyer_idx]:
+    for idx, line in enumerate(lines[:buyer_idx]):
         if skip_re.match(line):
             continue
         if re.match(r'^\d', line):
             continue
         if len(line) < 3:
             continue
-        # Check for company suffix first
+        line = _maybe_join_next_line(lines, idx)  # FIX: join wrapped "...Pvt\nLtd" names
         sm = _COMPANY_SUFFIX_RE.search(line)
         if sm:
             cand = _clean_company_name(sm.group(1))
             if cand and len(cand) > 3:
                 _log_field(doc_label, "vendor_name", "company_suffix_scan", line, cand, "ok")
                 return cand
-        # Or use the line itself if it looks like a company name
         cleaned = _clean_company_name(line)
         if cleaned and len(cleaned) > 5 and not re.search(r'\d{6,}', cleaned):
             _log_field(doc_label, "vendor_name", "header_line_scan", line, cleaned, "ok")
@@ -221,7 +305,6 @@ def _extract_vendor(text: str, doc_label: str = "Invoice") -> Optional[str]:
 
     _log_field(doc_label, "vendor_name", "all_strategies", None, None, "missing")
     return None
-
 
 # ---------------------------------------------------------------------------
 # Monetary field extraction
@@ -239,10 +322,11 @@ _RE_GST         = re.compile(r'(?:GST|IGST|CGST|SGST)\s*(?:@[\d.]+%?)?\s*[:\n\s]
 _RE_TOTAL       = re.compile(r'(?<!\bSub)(?<!\bSub\s)(?:Grand\s*)?Total\s*[:\n\s]*' + _RE_CURRENCY + r'([,\d]+\.\d{2})', re.I)
 # Invoice-specific fields
 _RE_INV_NUMBER  = re.compile(
-    r'(?:INVOICE\s*(?:#|NUMBER|NO\.?)|Invoice\s*(?:#|No\.?))\s*[:\n\s]*([A-Za-z0-9\-\/]+)',
+    r'\b(?:Tax\s+Invoice|INVOICE\s*(?:#|NUMBER|NO\.?)?|Invoice\s*(?:#|No\.?)?|INV)\s*[:\n\s\-/#]*'
+    r'(?!(?:DATE|DUE|TOTAL|AMOUNT|SUBTOTAL|TAX|NET|ITEM)\b)([A-Za-z0-9\-\/]{3,30})',
     re.I
 )
-_RE_PO_REF      = re.compile(r'PO\s*(?:REF|Reference|No\.?|Number)[.:\n\s]*([A-Za-z0-9\-]+)', re.I)
+_RE_PO_REF      = re.compile(r'\bPO\s*(?:REF|Reference|No\.?|Number)?[.:\n\s\-]*([A-Za-z0-9\-]+)', re.I)
 _RE_INV_DATE    = re.compile(
     r'(?<!DUE\s)(?:Invoice\s*)?Date\s*[:\n\s]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4}[\/\-\.]\d{2}[\/\-\.]\d{2})',
     re.I
@@ -302,7 +386,7 @@ def _extract_inv_lines(text: str) -> List[InvoiceLineItemExtraction]:
     lines = [l.strip() for l in text.split('\n') if l.strip()]
 
     _STOP_RE = re.compile(
-        r'^(?:Sub\s*[-\s]?total|Grand\s*Total|Total\s*Amount|Tax|GST|IGST|CGST|SGST|Discount|'
+        r'^(?:Sub\s*[-\s]?total|\bTotal\b|\bTax\b|GST|IGST|CGST|SGST|Discount|'
         r'Shipping|Freight|Note:|Terms|Remarks?|Authorized)',
         re.I
     )
@@ -312,7 +396,12 @@ def _extract_inv_lines(text: str) -> List[InvoiceLineItemExtraction]:
 
     for i, line in enumerate(lines):
         if not in_table:
-            words = set(re.findall(r'[a-zA-Z]+', line.lower()))
+            combined = line.lower()
+            if i + 1 < len(lines):
+                combined += " " + lines[i + 1].lower()
+            if i + 2 < len(lines):
+                combined += " " + lines[i + 2].lower()
+            words = set(re.findall(r'[a-zA-Z]+', combined))
             if len(words & _HEADER_KEYWORDS) >= 2:
                 in_table = True
             continue
@@ -350,6 +439,7 @@ def _extract_inv_lines(text: str) -> List[InvoiceLineItemExtraction]:
 
         # Try to find explicit "Qty X x Unit" pattern first
         qty_x = re.search(r'Qty\s*(\d+)\s*x\s*([\d,]+\.\d{2})', line, re.I)
+        qty_tok = None
         if qty_x:
             qty = float(qty_x.group(1))
             unit_price = _f(qty_x.group(2)) or unit_price
@@ -361,30 +451,63 @@ def _extract_inv_lines(text: str) -> List[InvoiceLineItemExtraction]:
             qty = 1.0
 
             if len(int_tokens) >= 2:
-                code = int_tokens[0]
-                qty = float(int_tokens[1])
+                if line_no_decimals.strip().startswith(int_tokens[0]):
+                    code = int_tokens[0]
+                    cand_idx = 1
+                else:
+                    code = None
+                    cand_idx = 0
+
+                cand_val = float(int_tokens[cand_idx])
+                if line_total > 0 and abs((cand_val * unit_price) - line_total) < 1.0:
+                    qty = cand_val
+                    qty_tok = int_tokens[cand_idx]
+                else:
+                    found_reconcile = False
+                    for tok in int_tokens:
+                        if code and tok == code:
+                            continue
+                        try:
+                            v = float(tok)
+                            if line_total > 0 and abs((v * unit_price) - line_total) < 1.0:
+                                qty = v
+                                qty_tok = tok
+                                found_reconcile = True
+                                break
+                        except ValueError:
+                            pass
+                    if not found_reconcile:
+                        logger.warning(
+                            f"Invoice line item qty ({int_tokens[cand_idx]}) does not reconcile with unit_price ({unit_price}) and line_total ({line_total})"
+                        )
+                        qty = cand_val
+                        qty_tok = int_tokens[cand_idx]
+
             elif len(int_tokens) == 1:
                 val = int_tokens[0]
                 if line_total > 0 and abs((float(val) * unit_price) - line_total) < 1.0:
                     qty = float(val)
+                    qty_tok = val
                     code = None
                 else:
                     if line_no_decimals.strip().startswith(val):
                         code = val
                         qty = 1.0
+                        qty_tok = None
                     else:
                         qty = float(val)
+                        qty_tok = val
 
         # Description is text excluding item_code, integer tokens, and decimal amounts
         desc_text = line_no_decimals
         if code:
             desc_text = re.sub(r'\b' + re.escape(code) + r'\b', '', desc_text, count=1)
-        if len(int_tokens) >= 2:
-            desc_text = re.sub(r'\b' + re.escape(int_tokens[1]) + r'\b', '', desc_text, count=1)
-        elif len(int_tokens) == 1 and qty != 1.0 and not code:
-            desc_text = re.sub(r'\b' + re.escape(int_tokens[0]) + r'\b', '', desc_text, count=1)
+        if qty_tok:
+            desc_text = re.sub(r'\b' + re.escape(qty_tok) + r'\b', '', desc_text, count=1)
 
-        desc = desc_text.strip(' \t-|:,')
+        desc_text = re.sub(r'\(?\s*Qty\s*\d+.*?\)?', '', desc_text, flags=re.I)
+        desc_text = re.sub(r'\bx\b', '', desc_text, flags=re.I)  # strip bare 'x' column multiplier
+        desc = desc_text.strip(' \t-|:(),')
         if not desc:
             desc = f"Line item {len(items)+1}"
 
@@ -559,7 +682,7 @@ class InvoiceParser(BaseDocumentParser):
         else:
             llm_used = False
 
-            if missing_fields and settings.OPENROUTER_API_KEY:
+            if missing_fields and _has_valid_llm_key():
                 logger.info(f"Invoice: LLM fallback for missing fields: {missing_fields}")
                 section_text = _extract_section_for_fields(cleaned, missing_fields)
                 prompt = _INV_MISSING_FIELDS_PROMPT.format(
@@ -581,7 +704,7 @@ class InvoiceParser(BaseDocumentParser):
                     logger.warning(f"Invoice: LLM fallback failed: {err}")
                     result.validation_errors = [err]
 
-            elif not missing_fields and not numeric_ok and settings.OPENROUTER_API_KEY:
+            elif not missing_fields and not numeric_ok and _has_valid_llm_key():
                 logger.info("Invoice: LLM fallback for numeric inconsistency")
                 schema_str = json.dumps(InvoiceExtraction.model_json_schema(), indent=2)
                 prompt = _INV_FULL_PROMPT.format(schema=schema_str, text=cleaned)
@@ -632,7 +755,7 @@ class InvoiceParser(BaseDocumentParser):
         }
         model_label = f"openrouter/{settings.OPENROUTER_MODEL}"
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                 if res.status_code != 200:
                     return None, model_label, 0, res.text, f"HTTP {res.status_code}"
@@ -658,7 +781,7 @@ class InvoiceParser(BaseDocumentParser):
         }
         model_label = f"openrouter/{settings.OPENROUTER_MODEL}"
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                 if res.status_code != 200:
                     return None, model_label, 0, res.text, f"HTTP {res.status_code}"

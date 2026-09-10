@@ -43,6 +43,20 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# LLM key guard — rejects empty strings AND well-known placeholder values
+# ---------------------------------------------------------------------------
+
+def _has_valid_llm_key() -> bool:
+    """Return True only when OPENROUTER_API_KEY looks like a real key."""
+    key = (settings.OPENROUTER_API_KEY or "").strip()
+    if not key:
+        return False
+    if key.lower() in ("your_openrouter_api_key_here", "changeme", "placeholder", "sk-placeholder"):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # LLM Prompts (used only for targeted fallback on missing fields)
 # ---------------------------------------------------------------------------
 
@@ -346,7 +360,8 @@ _RE_GST         = re.compile(r'(?:GST|IGST|CGST|SGST)\s*(?:@[\d.]+%?)?\s*[:\n\s]
 _RE_TOTAL       = re.compile(r'(?<!\bSub)(?<!\bSub\s)(?:Grand\s*)?Total\s*[:\n\s]*' + _RE_CURRENCY + r'([,\d]+\.\d{2})', re.I)
 # PO number: look for PO #, PO NUMBER, Purchase Order No, etc.
 _RE_PO_NUMBER   = re.compile(
-    r'(?:P\.?O\.?\s*(?:NUMBER|No\.?|#)|Purchase\s*Order\s*(?:Number|No\.?|#))\s*[:\n\s]*([A-Za-z0-9\-]+)',
+    r'\b(?:P\.?O\.?\s*(?:NUMBER|No\.?|#)?|Purchase\s*Order\s*(?:Number|No\.?|#)?)\s*[:\n\s\-]*'
+    r'(?!(?:BOX|DATE|TERMS|TOTAL|AMOUNT|LINE|VIA|METHOD|REQUISITIONER|SHIP)\b)([A-Za-z0-9\-]{3,30})',
     re.I
 )
 _RE_PO_DATE     = re.compile(
@@ -449,104 +464,239 @@ def _extract_po_lines(text: str) -> List[POLineItemExtraction]:
     items: List[POLineItemExtraction] = []
     lines = [l.strip() for l in text.split('\n') if l.strip()]
 
-    # Stop-words that mark end of line-item table
     _STOP_RE = re.compile(
-        r'^(?:Sub\s*[-\s]?total|Grand\s*Total|Total\s*Amount|Tax|GST|IGST|CGST|SGST|Discount|'
+        r'^(?:Sub\s*[-\s]?total|\bTotal\b|\bTax\b|GST|IGST|CGST|SGST|Discount|'
         r'Shipping|Freight|Note:|Terms|Remarks?|Authorized)',
         re.I
     )
-
-    # Table header detector: row must have at least 2 of these column keywords
     _HEADER_KEYWORDS = {'item', 'description', 'qty', 'quantity', 'unit', 'price', 'amount', 'total', 'rate'}
 
-    in_table = False
-
+    # ── Phase 1: locate header row ──────────────────────────────────────────
+    header_idx = -1
     for i, line in enumerate(lines):
-        if not in_table:
-            words = set(re.findall(r'[a-zA-Z]+', line.lower()))
-            if len(words & _HEADER_KEYWORDS) >= 2:
-                in_table = True
-            continue
-
-        # Stop at summary rows
-        if _STOP_RE.match(line):
+        combined = line.lower()
+        if i + 1 < len(lines): combined += " " + lines[i + 1].lower()
+        if i + 2 < len(lines): combined += " " + lines[i + 2].lower()
+        words = set(re.findall(r'[a-zA-Z]+', combined))
+        if len(words & _HEADER_KEYWORDS) >= 2:
+            header_idx = i
             break
 
-        # Skip blank/separator lines
-        if not line or re.match(r'^[-=_\s]+$', line):
+    if header_idx < 0:
+        return items
+
+    # Skip all lines that are part of the header block (pure keywords, no amounts)
+    body_start = header_idx + 1
+    while body_start < len(lines):
+        candidate = lines[body_start]
+        has_amount = bool(re.search(r'[\d,]+\.\d{2}', candidate))
+        is_only_keywords = bool(set(re.findall(r'[a-zA-Z]+', candidate.lower())) & _HEADER_KEYWORDS) and not has_amount
+        is_separator = bool(re.match(r'^[-=_\s]+$', candidate))
+        if _STOP_RE.match(candidate) and not has_amount:
+            body_start += 1
             continue
-
-        # Collect decimal amounts from the CURRENT line first
-        current_line_amounts = [_f(am) for am in re.findall(r'[\d,]+\.\d{2}', line) if _f(am) is not None and _f(am) > 0]
-
-        if len(current_line_amounts) >= 2:
-            num_values = current_line_amounts
-        else:
-            # If current line has < 2 decimal amounts, check if next line wrapped
-            num_values = []
-            scan_lines = lines[i:min(i + 3, len(lines))]
-            for sl in scan_lines:
-                if _STOP_RE.match(sl):
-                    break
-                for am in re.findall(r'[\d,]+\.\d{2}', sl):
-                    v = _f(am)
-                    if v is not None and v > 0:
-                        num_values.append(v)
-
-        # Need at least 2 amounts (unit_price + line_total) to be a line-item row
-        if len(num_values) < 2:
+        if is_separator:
+            body_start += 1
             continue
+        if is_only_keywords and not has_amount:
+            body_start += 1
+            continue
+        break
 
-        unit_price = num_values[0]
-        line_total = num_values[-1]
+    body_lines = lines[body_start:]
 
-        # Isolate text without decimal amounts
-        line_no_decimals = re.sub(r'[\d,]+\.\d{2}', '', line)
+    # ── Phase 2: try to find end of body ────────────────────────────────────
+    end_idx = len(body_lines)
+    for j, bl in enumerate(body_lines):
+        if _STOP_RE.match(bl) and not re.search(r'[\d,]+\.\d{2}', bl):
+            end_idx = j
+            break
+    body_lines = body_lines[:end_idx]
 
-        # Extract standalone integer tokens from line_no_decimals
-        int_tokens = re.findall(r'\b\d{1,8}\b', line_no_decimals)
+    # ── Phase 3: check format — horizontal (each row on 1 line) or vertical ─
+    # Horizontal: any body line has >= 2 decimal amounts
+    horizontal = any(
+        len([x for x in re.findall(r'[\d,]+\.\d{2}', bl) if _f(x)]) >= 2
+        for bl in body_lines
+    )
 
-        code = None
-        qty = 1.0
-
-        if len(int_tokens) >= 2:
-            code = int_tokens[0]
-            qty = float(int_tokens[1])
-        elif len(int_tokens) == 1:
-            val = int_tokens[0]
-            if line_total > 0 and abs((float(val) * unit_price) - line_total) < 1.0:
-                qty = float(val)
-                code = None
-            else:
-                if line_no_decimals.strip().startswith(val):
-                    code = val
-                    qty = 1.0
-                else:
-                    qty = float(val)
-
-        # Description is text excluding item_code, integer tokens, and decimal amounts
-        desc_text = line_no_decimals
-        if code:
-            desc_text = re.sub(r'\b' + re.escape(code) + r'\b', '', desc_text, count=1)
-        if len(int_tokens) >= 2:
-            desc_text = re.sub(r'\b' + re.escape(int_tokens[1]) + r'\b', '', desc_text, count=1)
-        elif len(int_tokens) == 1 and qty != 1.0 and not code:
-            desc_text = re.sub(r'\b' + re.escape(int_tokens[0]) + r'\b', '', desc_text, count=1)
-
-        desc = desc_text.strip(' \t-|:,')
+    def _parse_row(desc_raw, code_raw, qty_raw, up_raw, lt_raw, item_n):
+        """Convert raw string tokens into a POLineItemExtraction."""
+        unit_price = _f(up_raw)
+        line_total = _f(lt_raw)
+        if unit_price is None or line_total is None:
+            return None
+        try:
+            qty = float(qty_raw.strip())
+        except (ValueError, TypeError):
+            qty = 1.0
+        # Validate qty * unit_price ≈ line_total
+        if line_total > 0 and abs((qty * unit_price) - line_total) > 1.0:
+            # try to derive qty
+            if unit_price > 0:
+                derived = round(line_total / unit_price, 2)
+                if abs((derived * unit_price) - line_total) < 1.0:
+                    qty = derived
+        desc = re.sub(r'\(?\s*Qty\s*\d+.*?\)?', '', desc_raw, flags=re.I).strip(' \t-|:(),')
         if not desc:
-            desc = f"Line item {len(items)+1}"
-
-        _log_field("PO", f"line_item[{len(items)}]", "numeric_col_detect",
-                   line[:80], f"code={code} qty={qty} up={unit_price} total={line_total}", "ok")
-
-        items.append(POLineItemExtraction(
-            item_code=code,
+            desc = f"Line item {item_n + 1}"
+        return POLineItemExtraction(
+            item_code=code_raw.strip() if code_raw and code_raw.strip() else None,
             description=desc[:150],
             qty=qty,
             unit_price=unit_price,
-            line_total=line_total
-        ))
+            line_total=line_total,
+        )
+
+    if horizontal:
+        # ── Horizontal format ────────────────────────────────────────────────
+        for line in body_lines:
+            if _STOP_RE.match(line):
+                break
+            if not line or re.match(r'^[-=_\s]+$', line):
+                continue
+
+            amounts = [_f(am) for am in re.findall(r'[\d,]+\.\d{2}', line) if _f(am)]
+            if len(amounts) < 2:
+                continue
+
+            unit_price = amounts[0]
+            line_total = amounts[-1]
+            line_no_dec = re.sub(r'[\d,]+\.\d{2}', '', line)
+            int_tokens = re.findall(r'\b\d{1,8}\b', line_no_dec)
+
+            code = None
+            qty = 1.0
+            qty_tok = None
+
+            if len(int_tokens) >= 2:
+                if line_no_dec.strip().startswith(int_tokens[0]):
+                    code = int_tokens[0]
+                    cand_idx = 1
+                else:
+                    code = None
+                    cand_idx = 0
+                cand_val = float(int_tokens[cand_idx])
+                if line_total > 0 and abs((cand_val * unit_price) - line_total) < 1.0:
+                    qty = cand_val
+                    qty_tok = int_tokens[cand_idx]
+                else:
+                    for tok in int_tokens:
+                        if code and tok == code:
+                            continue
+                        try:
+                            v = float(tok)
+                            if line_total > 0 and abs((v * unit_price) - line_total) < 1.0:
+                                qty = v
+                                qty_tok = tok
+                                break
+                        except ValueError:
+                            pass
+                    if qty_tok is None:
+                        qty = cand_val
+                        qty_tok = int_tokens[cand_idx]
+            elif len(int_tokens) == 1:
+                val = int_tokens[0]
+                if line_total > 0 and abs((float(val) * unit_price) - line_total) < 1.0:
+                    qty = float(val)
+                    qty_tok = val
+                elif line_no_dec.strip().startswith(val):
+                    code = val
+                else:
+                    qty = float(val)
+                    qty_tok = val
+
+            desc_text = line_no_dec
+            if code:
+                desc_text = re.sub(r'\b' + re.escape(code) + r'\b', '', desc_text, count=1)
+            if qty_tok:
+                desc_text = re.sub(r'\b' + re.escape(qty_tok) + r'\b', '', desc_text, count=1)
+            desc_text = re.sub(r'\(?\s*Qty\s*\d+.*?\)?', '', desc_text, flags=re.I)
+            desc = desc_text.strip(' \t-|:(),')
+            if not desc:
+                desc = f"Line item {len(items) + 1}"
+
+            _log_field("PO", f"line_item[{len(items)}]", "horizontal",
+                       line[:80], f"qty={qty} up={unit_price} total={line_total}", "ok")
+            items.append(POLineItemExtraction(
+                item_code=code,
+                description=desc[:150],
+                qty=qty,
+                unit_price=unit_price,
+                line_total=line_total,
+            ))
+
+    else:
+        # ── Vertical format: group lines into rows ───────────────────────────
+        # Each row = item_code line? + description + qty + unit_price + total
+        # Detect rows: a row starts with an item code (integer) or a description (text)
+        # and ends when we collect 2 decimal amounts.
+        i = 0
+        while i < len(body_lines):
+            line = body_lines[i]
+            if _STOP_RE.match(line) and not re.search(r'[\d,]+\.\d{2}', line):
+                break
+            if re.match(r'^[-=_\s]+$', line):
+                i += 1
+                continue
+
+            # Accumulate lines until we have 2 decimal amounts
+            group = []
+            amounts = []
+            j = i
+            while j < len(body_lines) and len(amounts) < 2:
+                bl = body_lines[j]
+                if _STOP_RE.match(bl) and not re.search(r'[\d,]+\.\d{2}', bl):
+                    break
+                group.append(bl)
+                for am in re.findall(r'[\d,]+\.\d{2}', bl):
+                    v = _f(am)
+                    if v:
+                        amounts.append((am, v))
+                j += 1
+
+            if len(amounts) < 2:
+                i = j
+                continue
+
+            unit_price = amounts[0][1]
+            line_total = amounts[-1][1]
+
+            # Find description and qty from group
+            desc_candidates = []
+            qty_raw = None
+            code_raw = None
+
+            for gl in group:
+                gl_clean = re.sub(r'[\d,]+\.\d{2}', '', gl).strip()
+                if re.match(r'^\d{1,8}$', gl_clean):
+                    # pure integer — item code or qty
+                    v = float(gl_clean)
+                    if line_total > 0 and unit_price > 0 and abs((v * unit_price) - line_total) < 1.0:
+                        qty_raw = gl_clean
+                    elif code_raw is None:
+                        code_raw = gl_clean
+                elif gl_clean and not re.match(r'^[\d\.\-,]+$', gl_clean):
+                    desc_candidates.append(gl_clean)
+
+            if qty_raw is None and unit_price > 0:
+                derived = round(line_total / unit_price, 0)
+                if abs((derived * unit_price) - line_total) < 1.0:
+                    qty_raw = str(int(derived))
+
+            qty = float(qty_raw) if qty_raw else 1.0
+            desc = ' '.join(desc_candidates).strip(' \t-|:(),') or f"Line item {len(items) + 1}"
+
+            _log_field("PO", f"line_item[{len(items)}]", "vertical_group",
+                       str(group)[:80], f"qty={qty} up={unit_price} total={line_total}", "ok")
+            items.append(POLineItemExtraction(
+                item_code=code_raw,
+                description=desc[:150],
+                qty=qty,
+                unit_price=unit_price,
+                line_total=line_total,
+            ))
+            i = j
 
     return items
 
@@ -685,8 +835,8 @@ def _det_parse_po(text: str, pdf_path: Optional[str] = None) -> POExtraction:
     # --- Identifiers ---
     po_m = _RE_PO_NUMBER.search(text)
     if not po_m:
-        # Looser fallback
-        po_m = re.search(r'\bPO\s*[#:\-]?\s*([A-Za-z0-9\-]+)', text, re.I)
+        # Looser fallback with negative lookahead
+        po_m = re.search(r'\bPO\s*[#:\-]?\s*(?!(?:BOX|DATE|TERMS|TOTAL|AMOUNT|LINE|VIA|METHOD|REQUISITIONER|SHIP)\b)([A-Za-z0-9\-]{3,30})', text, re.I)
     po_num = po_m.group(1).strip() if po_m else "UNKNOWN"
     _log_field("PO", "po_number", "RE_PO_NUMBER", po_m and po_m.group(0), po_num,
                "ok" if po_num != "UNKNOWN" else "missing")
@@ -775,7 +925,7 @@ class PurchaseOrderParser(BaseDocumentParser):
             # ── Step 4: Targeted LLM fallback ─────────────────────────────
             llm_used = False
 
-            if missing_fields and settings.OPENROUTER_API_KEY:
+            if missing_fields and _has_valid_llm_key():
                 logger.info(f"PO: LLM fallback for missing fields: {missing_fields}")
                 section_text = _extract_section_for_fields(cleaned, missing_fields)
                 prompt = _PO_MISSING_FIELDS_PROMPT.format(
@@ -799,7 +949,7 @@ class PurchaseOrderParser(BaseDocumentParser):
                     logger.warning(f"PO: LLM fallback failed: {err}")
                     result.validation_errors = [err]
 
-            elif not missing_fields and not numeric_ok and settings.OPENROUTER_API_KEY:
+            elif not missing_fields and not numeric_ok and _has_valid_llm_key():
                 # Numeric check failed — send full document to LLM for totals verification
                 logger.info("PO: LLM fallback for numeric inconsistency")
                 schema_str = json.dumps(POExtraction.model_json_schema(), indent=2)
@@ -856,7 +1006,7 @@ class PurchaseOrderParser(BaseDocumentParser):
         }
         model_label = f"openrouter/{settings.OPENROUTER_MODEL}"
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                 if res.status_code != 200:
                     return None, model_label, 0, res.text, f"HTTP {res.status_code}"
@@ -884,7 +1034,7 @@ class PurchaseOrderParser(BaseDocumentParser):
         }
         model_label = f"openrouter/{settings.OPENROUTER_MODEL}"
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                 if res.status_code != 200:
                     return None, model_label, 0, res.text, f"HTTP {res.status_code}"

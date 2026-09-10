@@ -13,7 +13,7 @@ from app.db.session import engine
 from app.db.base import Base
 import app.models  # register ORM models
 
-from app.api.v1 import bundles, documents, router, verification
+from app.api.v1 import bundles, documents, router, verification, run
 
 # Auto-create tables if running with SQLite or fresh DB
 Base.metadata.create_all(bind=engine)
@@ -38,6 +38,7 @@ app.include_router(bundles.router, prefix=settings.API_V1_STR)
 app.include_router(documents.router, prefix=settings.API_V1_STR)
 app.include_router(router.router, prefix=settings.API_V1_STR)
 app.include_router(verification.router, prefix=settings.API_V1_STR)
+app.include_router(run.router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():

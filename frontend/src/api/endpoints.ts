@@ -52,3 +52,14 @@ export const getVerificationRun = async (runId: string): Promise<VerificationRun
   return response.data;
 };
 
+
+// -- NL Query via /run endpoint ---------------------------------------------
+export const runQuery = async (query: string, bundleId?: string): Promise<any> => {
+  const response = await apiClient.post<any>('/run', { query, bundle_id: bundleId || undefined });
+  return response.data;
+};
+
+export const runAction = async (bundleId: string, action: string): Promise<any> => {
+  const response = await apiClient.post<any>('/run', { bundle_id: bundleId, action });
+  return response.data;
+};

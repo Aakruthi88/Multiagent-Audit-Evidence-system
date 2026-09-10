@@ -29,15 +29,15 @@ class LLMRouterService:
         model_used = "llm_fallback_router"
         tokens_used = 0
 
-        # 1. OpenRouter LLM Call
-        if settings.OPENROUTER_API_KEY and query_text:
-            decision, model_used, tokens_used = self._call_openrouter_llm(query_text, bundle_id)
-        
-        # 2. Ollama Local LLM Fallback
-        if not decision and settings.OLLAMA_HOST and query_text:
+        # 1. Ollama Local LLM Call (llama2:latest)
+        if settings.OLLAMA_HOST and query_text:
             decision, model_used, tokens_used = self._call_ollama_llm(query_text, bundle_id)
 
-        # 3. Intelligent Deterministic Fallback Parser (Offline/Keyless Mode)
+        # 2. OpenRouter LLM Call Fallback
+        if not decision and settings.OPENROUTER_API_KEY and query_text:
+            decision, model_used, tokens_used = self._call_openrouter_llm(query_text, bundle_id)
+
+        # 4. Intelligent Deterministic Fallback Parser (Offline/Keyless Mode)
         if not decision:
             logger.info("[Router Agent] LLM unavailable or fallback required — using structured decision parser.")
             decision = self._parse_structured_decision(query_text, bundle_id, doc_paths)
@@ -138,8 +138,8 @@ Do NOT execute downstream agent logic. Only output valid JSON matching the schem
         """Structured parser simulating LLM reasoning for offline/test environments."""
         q = query.lower()
         
-        # Extract transaction reference if mentioned e.g. TXN-2026-001 or TXN-2026-006
-        txn_match = re.search(r'(TXN[-_]?2026[-_]?\d{3}|\bTXN\d+\b)', query, re.I)
+        # Extract transaction reference if mentioned e.g. TXN-2026-001, TXN 2026 180, TXN-2025-0001
+        txn_match = re.search(r'\b(TXN[-_\s]?(?:\d{4}[-_\s]?)?\d{1,5})\b', query, re.I)
         txn_ref = txn_match.group(1).upper() if txn_match else None
 
         # Check if reference is required but missing (e.g., "verify transaction" without specifying which)
