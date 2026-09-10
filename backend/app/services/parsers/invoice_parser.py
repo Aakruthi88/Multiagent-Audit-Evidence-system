@@ -322,11 +322,21 @@ _RE_GST         = re.compile(r'(?:GST|IGST|CGST|SGST)\s*(?:@[\d.]+%?)?\s*[:\n\s]
 _RE_TOTAL       = re.compile(r'(?<!\bSub)(?<!\bSub\s)(?:Grand\s*)?Total\s*[:\n\s]*' + _RE_CURRENCY + r'([,\d]+\.\d{2})', re.I)
 # Invoice-specific fields
 _RE_INV_NUMBER  = re.compile(
-    r'\b(?:Tax\s+Invoice|INVOICE\s*(?:#|NUMBER|NO\.?)?|Invoice\s*(?:#|No\.?)?|INV)\s*[:\n\s\-/#]*'
-    r'(?!(?:DATE|DUE|TOTAL|AMOUNT|SUBTOTAL|TAX|NET|ITEM)\b)([A-Za-z0-9\-\/]{3,30})',
+    r'(?:\b(?:(?:Tax\s+Invoice|INVOICE|Invoice)\s*(?:#|NUMBER|NUM|NO\.?|ID)|Tax\s+Invoice\s*:)\s*[:\-]?\s*'
+    r'|\bInvoice\s*[:#\-]\s*'
+    r'|\bInvoice\s+(?=\d{4,10}\b)'
+    r')(?!(?:DATE|DUE|TOTAL|AMOUNT|SUBTOTAL|TAX|NET|ITEM|BILL|SHIP|TO|FOR|CUST|VENDOR|PHONE|TEL|FAX|EMAIL|ADDR)\b)([A-Za-z0-9\-\/]{3,30})'
+    r'|\b(INV[-_/]?[0-9][0-9A-Za-z\-_/]{2,20})\b',
     re.I
 )
-_RE_PO_REF      = re.compile(r'\bPO\s*(?:REF|Reference|No\.?|Number)?[.:\n\s\-]*([A-Za-z0-9\-]+)', re.I)
+_RE_PO_REF      = re.compile(
+    r'(?:\b(?:PO\s*(?:REF|Reference|No\.?|Number|#)|Purchase\s*Order\s*(?:REF|Reference|No\.?|Number|#))\s*[:\-]?\s*'
+    r'|\bPO\s*[:#\-]\s*'
+    r'|\bPO\s+(?=\d{4,10}\b)'
+    r')(?!(?:BOX|DATE|TERMS|TOTAL|AMOUNT|LINE|VIA|METHOD|REQUISITIONER|SHIP|PHONE|DUE|TO|VENDOR|BUYER|TEL|FAX|EMAIL|ADDR)\b)([A-Za-z0-9\-]{3,30})'
+    r'|\b(PO[-_/]?[0-9][0-9A-Za-z\-_/]{2,20})\b',
+    re.I
+)
 _RE_INV_DATE    = re.compile(
     r'(?<!DUE\s)(?:Invoice\s*)?Date\s*[:\n\s]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4}[\/\-\.]\d{2}[\/\-\.]\d{2})',
     re.I
@@ -596,14 +606,24 @@ def _det_parse_invoice(text: str) -> InvoiceExtraction:
     inv_m = _RE_INV_NUMBER.search(text)
     inv_num = "UNKNOWN"
     if inv_m:
-        cand = inv_m.group(1).strip()
-        if cand.upper() not in ("DATE", "CUSTOMER", "DUE", "PO", "NO", "NUMBER"):
-            inv_num = cand
+        for g in inv_m.groups():
+            if g:
+                cand = g.strip()
+                if cand.upper() not in ("DATE", "CUSTOMER", "DUE", "PO", "NO", "NUMBER", "TOTAL", "AMOUNT", "TAX", "SUBTOTAL", "PHONE", "TEL", "FAX", "EMAIL", "BILL", "SHIP", "TO", "FOR"):
+                    inv_num = cand
+                    break
     _log_field("Invoice", "invoice_number", "RE_INV_NUMBER", inv_m and inv_m.group(0), inv_num,
                "ok" if inv_num != "UNKNOWN" else "missing")
 
     po_m = _RE_PO_REF.search(text)
-    po_ref = po_m.group(1).strip() if po_m else None
+    po_ref = None
+    if po_m:
+        for g in po_m.groups():
+            if g:
+                cand = g.strip()
+                if cand.upper() not in ("DATE", "CUSTOMER", "DUE", "PO", "NO", "NUMBER", "TOTAL", "AMOUNT", "BOX", "PHONE", "TERMS", "SHIP", "TEL", "FAX", "EMAIL"):
+                    po_ref = cand
+                    break
     _log_field("Invoice", "po_ref_raw", "RE_PO_REF", po_m and po_m.group(0), po_ref,
                "ok" if po_ref else "missing")
 

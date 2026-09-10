@@ -471,8 +471,8 @@ const AskQuery: React.FC = () => {
                 </div>
                 <div style={{ background: "rgba(255,255,255,0.03)", padding: "0.85rem 1rem", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)" }}>
                   <div style={{ fontSize: "0.75rem", color: "#94a3b8", textTransform: "uppercase" }}>Discrepancies</div>
-                  <div style={{ fontSize: "1.1rem", fontWeight: 700, color: (result.report.discrepancies_count ?? 0) > 0 ? "#f87171" : "#34d399", marginTop: 4 }}>
-                    {result.report.discrepancies_count ?? 0} Issues
+                  <div style={{ fontSize: "1.1rem", fontWeight: 700, color: (result.report.discrepancies_count ?? result.report.failed_checks?.length ?? 0) > 0 ? "#f87171" : "#34d399", marginTop: 4 }}>
+                    {result.report.discrepancies_count ?? result.report.failed_checks?.length ?? 0} Issues
                   </div>
                 </div>
                 <div style={{ background: "rgba(255,255,255,0.03)", padding: "0.85rem 1rem", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)" }}>

@@ -139,7 +139,13 @@ _NARRATIVE_SYSTEM = GROUNDING_RULES + """
 You are an enterprise audit report writer for a Big-4 accounting firm.
 Write a clear, professional audit narrative (2-4 paragraphs) for an audit bundle.
 Ground every statement strictly in the provided document evidence and verification checks.
-Cite specific document numbers (Invoice #, PO #, GRN #), amounts (in Rs./INR), vendor names, bank payment details (reference/date), and verification check outcomes.
+Cite specific document numbers (Invoice #, PO #, GRN #), amounts (in ₹ / Rs. / INR), vendor names, bank payment details (reference/date), and verification check outcomes.
+
+CRITICAL FINANCIAL GROUNDING RULES:
+1. NEVER alter, round, recalculate, drop digits from, or invent monetary amounts.
+2. If Invoice Total is ₹130,390.00 and Payment Amount is ₹130,390.00, cite EXACTLY ₹130,390.00. NEVER say ₹13,039.00 or ₹13,03,900.00.
+3. Use the exact verified monetary amounts provided in the Verified Financial Totals section.
+
 CRITICAL INSTRUCTION: Do NOT include any thinking process, analysis steps, or introductory text. Return ONLY the final audit narrative text directly."""
 
 def _clean_narrative_text(raw_text: str) -> str:
@@ -156,6 +162,54 @@ def _clean_narrative_text(raw_text: str) -> str:
     text = re.sub(r"\n?```$", "", text, flags=re.I)
     return text.strip()
 
+def _enforce_monetary_integrity(narrative: str, evidence: Dict[str, Any]) -> str:
+    """Ensure all monetary figures in the narrative match verified evidence amounts with 100% fidelity.
+    Corrects LLM quantization, rounding, or scaling errors (e.g. 13,039 or 13,03,900 instead of 130,390.00)."""
+    if not narrative:
+        return narrative
+
+    ground_truth = []
+    inv = evidence.get("invoice") or {}
+    po = evidence.get("purchase_order") or {}
+    bank = evidence.get("bank_statement") or {}
+
+    for obj in (inv, po, bank):
+        for k in ("total_amount", "payment_amount", "subtotal", "tax_amount"):
+            val = obj.get(k)
+            if val is not None and isinstance(val, (int, float)) and val > 0:
+                ground_truth.append(float(val))
+
+    if not ground_truth:
+        return narrative
+
+    result = narrative
+
+    for val in sorted(set(ground_truth), reverse=True):
+        pattern = re.compile(
+            r'(?:(?:Rs\.?|INR|₹|\$)\s*)?(\b\d[\d,]*\.?\d*\b)',
+            re.IGNORECASE
+        )
+
+        def replace_corrupted(match):
+            matched_str = match.group(0)
+            num_part = match.group(1).replace(",", "")
+            try:
+                num_val = float(num_part)
+            except ValueError:
+                return matched_str
+
+            if num_val > 0:
+                ratio = num_val / val
+                # Check for 10x lower, 10x higher, or near-equality (rounding/formatting error)
+                if (0.09 <= ratio <= 0.11) or (9.9 <= ratio <= 10.1) or (0.99 <= ratio <= 1.01):
+                    prefix = "Rs. " if "rs" in matched_str.lower() else ("₹" if "₹" in matched_str else "₹")
+                    return f"{prefix}{val:,.2f}"
+            return matched_str
+
+        result = pattern.sub(replace_corrupted, result)
+
+    return result
+
 def _generate_narrative(
     checks: List[Dict[str, Any]],
     discrepancies: List[Dict[str, Any]],
@@ -165,6 +219,22 @@ def _generate_narrative(
     passed_count = sum(1 for c in checks if c.get("status") == "pass")
     total_count = len(checks)
     failed_checks = _sort_by_severity([c for c in checks if c.get("status") in ("fail", "warning")])
+
+    inv = evidence.get("invoice") or {}
+    po = evidence.get("purchase_order") or {}
+    bank = evidence.get("bank_statement") or {}
+
+    inv_amt_str = f"₹{inv.get('total_amount'):,.2f}" if inv.get("total_amount") is not None else "N/A"
+    po_amt_str = f"₹{po.get('total_amount'):,.2f}" if po.get("total_amount") is not None else "N/A"
+    pay_amt_str = f"₹{bank.get('payment_amount'):,.2f}" if bank.get("payment_amount") is not None else "N/A"
+
+    financial_summary = {
+        "verified_invoice_total": inv_amt_str,
+        "verified_po_total": po_amt_str,
+        "verified_payment_amount": pay_amt_str,
+        "payment_date": bank.get("payment_date", "N/A"),
+        "bank_reference": bank.get("bank_reference", "N/A"),
+    }
 
     checks_summary = {
         "total_checks": total_count,
@@ -182,7 +252,9 @@ def _generate_narrative(
     }
 
     prompt = (
-        "Audit Evidence:\n"
+        "Verified Financial Ground Truth (USE THESE EXACT AMOUNTS):\n"
+        + json.dumps(financial_summary, indent=2)
+        + "\n\nAudit Evidence:\n"
         + json.dumps(evidence, indent=2)
         + "\n\nVerification Summary:\n"
         + json.dumps(checks_summary, indent=2)
@@ -201,13 +273,14 @@ def _generate_narrative(
                     "temperature": 0.2,
                 },
             }
-            with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(180.0, connect=3.0)) as client:
                 res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
                 if res.status_code == 200:
                     text = res.json().get("response", "").strip()
                     logger.info(f"[ReportAgent] Ollama raw response (first 200 chars): {text[:200]}")
                     cleaned = _clean_narrative_text(text)
                     if cleaned:
+                        cleaned = _enforce_monetary_integrity(cleaned, evidence)
                         logger.info("[ReportAgent] Using Ollama LLM narrative")
                         return cleaned
                     else:
@@ -241,6 +314,7 @@ def _generate_narrative(
                     text = res.json()["choices"][0]["message"]["content"].strip()
                     cleaned = _clean_narrative_text(text)
                     if cleaned:
+                        cleaned = _enforce_monetary_integrity(cleaned, evidence)
                         logger.info("[ReportAgent] Using OpenRouter LLM narrative")
                         return cleaned
         except Exception as exc:
@@ -261,19 +335,26 @@ def _template_narrative(
     bank = evidence.get("bank_statement") or {}
     vendor = evidence.get("vendor") or "unknown vendor"
 
+    inv_amt_val = inv.get("total_amount")
+    inv_amt = f"₹{inv_amt_val:,.2f}" if inv_amt_val is not None else "N/A"
+    po_amt_val = po.get("total_amount")
+    po_amt = f"₹{po_amt_val:,.2f}" if po_amt_val is not None else "N/A"
+    pay_amt_val = bank.get("payment_amount")
+    pay_amt = f"₹{pay_amt_val:,.2f}" if pay_amt_val is not None else "N/A"
+
     lines = [
         f"Audit Summary for Bundle {bundle_id}",
         f"Vendor: {vendor}",
     ]
     if inv:
-        lines.append(f"Invoice #{inv.get('invoice_number')} | Total Amount: Rs. {inv.get('total_amount', 'N/A')} | Date: {inv.get('invoice_date', 'N/A')}")
+        lines.append(f"Invoice #{inv.get('invoice_number')} | Total Amount: {inv_amt} | Date: {inv.get('invoice_date', 'N/A')}")
     if po:
-        lines.append(f"Purchase Order #{po.get('po_number')} | Total Amount: Rs. {po.get('total_amount', 'N/A')}")
+        lines.append(f"Purchase Order #{po.get('po_number')} | Total Amount: {po_amt}")
     if grn:
         lines.append(f"Goods Received Note #{grn.get('grn_number')} | Date: {grn.get('grn_date', 'N/A')}")
 
     if bank.get("payment_status") == "confirmed":
-        lines.append(f"Payment Status: Confirmed on {bank.get('payment_date')} (Ref: {bank.get('bank_reference')}, Amount: Rs. {bank.get('payment_amount')})")
+        lines.append(f"Payment Status: Confirmed on {bank.get('payment_date')} (Ref: {bank.get('bank_reference')}, Amount: {pay_amt})")
     else:
         lines.append(f"Payment Status: {bank.get('payment_status', 'No payment confirmation found')}")
 
@@ -311,6 +392,7 @@ def report_summary_node(state: BundleState) -> Dict[str, Any]:
     discrepancies = state.get("discrepancies") or []
     passed_count = sum(1 for c in checks if c.get("status") == "pass")
     total_count = len(checks)
+    failed_checks = _sort_by_severity([c for c in checks if c.get("status") in ("fail", "warning")])
 
     db = SessionLocal()
     evidence = _get_bundle_evidence(db, bundle_id)
@@ -321,12 +403,13 @@ def report_summary_node(state: BundleState) -> Dict[str, Any]:
     vendor = evidence.get("vendor") or "Vendor"
 
     inv_num = inv.get("invoice_number", "N/A")
-    inv_amt = f"Rs. {inv.get('total_amount'):,.2f}" if inv.get("total_amount") is not None else "N/A"
+    inv_amt = f"₹{inv.get('total_amount'):,.2f}" if inv.get('total_amount') is not None else "N/A"
     po_num = po.get("po_number", "N/A")
 
     pay_status_str = ""
     if bank.get("payment_status") == "confirmed":
-        pay_status_str = f"Payment of {inv_amt} was confirmed on {bank.get('payment_date')} (Bank Ref: {bank.get('bank_reference')})."
+        pay_amt_formatted = f"₹{bank.get('payment_amount'):,.2f}" if bank.get('payment_amount') is not None else inv_amt
+        pay_status_str = f"Payment of {pay_amt_formatted} was confirmed on {bank.get('payment_date')} (Bank Ref: {bank.get('bank_reference')})."
     else:
         pay_status_str = "No matching bank statement payment record was found."
 
@@ -347,6 +430,8 @@ def report_summary_node(state: BundleState) -> Dict[str, Any]:
         exec_summary = template_summary
         logger.info("[ReportAgent:summary] LLM unavailable - using template summary")
 
+    exec_summary = _enforce_monetary_integrity(exec_summary, evidence)
+
     report_json = {
         "report_type": "summary",
         "bundle_id": bundle_id,
@@ -356,8 +441,9 @@ def report_summary_node(state: BundleState) -> Dict[str, Any]:
         "checks_passed": passed_count,
         "checks_total": total_count,
         "verification_checks": checks,
-        "discrepancies_count": len(discrepancies),
-        "discrepancies": discrepancies,
+        "failed_checks": failed_checks,
+        "discrepancies_count": len(failed_checks),
+        "discrepancies": _sort_by_severity(discrepancies),
         "evidence": evidence,
         "executive_summary": exec_summary,
         "note": exec_summary,
@@ -408,6 +494,8 @@ def report_detailed_node(state: BundleState) -> Dict[str, Any]:
         narrative_source = "template_fallback"
         logger.info(f"[ReportAgent:detailed] Using grounded template fallback for bundle {bundle_id}")
 
+    narrative = _enforce_monetary_integrity(narrative, evidence)
+
     failed_checks = _sort_by_severity(
         [c for c in checks if c.get("status") in ("fail", "warning")]
     )
@@ -415,12 +503,12 @@ def report_detailed_node(state: BundleState) -> Dict[str, Any]:
     inv = evidence.get("invoice") or {}
     inv_num = inv.get("invoice_number", "N/A")
     vendor = evidence.get("vendor") or "Vendor"
-    inv_amt = f"Rs. {inv.get('total_amount'):,.2f}" if inv.get("total_amount") is not None else "N/A"
+    inv_amt = f"₹{inv.get('total_amount'):,.2f}" if inv.get('total_amount') is not None else "N/A"
 
     exec_summary = (
         f"Audit bundle for Invoice #{inv_num} (Vendor: '{vendor}', Amount: {inv_amt}) "
         f"was flagged with verdict '{state.get('verdict')}' ({state.get('severity')} severity) "
-        f"due to {len(discrepancies)} discrepancy(ies) and {len(failed_checks)} failed check(s)."
+        f"due to {len(failed_checks)} failed check(s) and {len(discrepancies)} discrepancy(ies)."
     )
 
     report_json = {
@@ -435,6 +523,7 @@ def report_detailed_node(state: BundleState) -> Dict[str, Any]:
         "evidence": evidence,
         "failed_checks": failed_checks,
         "discrepancies": _sort_by_severity(discrepancies),
+        "discrepancies_count": len(failed_checks),
         "checks_total": len(checks),
         "checks_passed": sum(1 for c in checks if c.get("status") == "pass"),
         "generated_at": datetime.now(timezone.utc).isoformat(),

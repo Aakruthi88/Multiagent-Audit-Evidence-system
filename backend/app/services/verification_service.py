@@ -346,7 +346,7 @@ class VerificationService:
             inv_num_clean = re.sub(r'[^0-9a-zA-Z]', '', inv.invoice_number or "").upper()
             for txn in bank_txns:
                 txn_inv = re.sub(r'[^0-9a-zA-Z]', '', txn.extracted_invoice_number or "").upper()
-                if txn_inv and txn_inv in inv_num_clean or inv_num_clean in txn_inv:
+                if txn_inv and inv_num_clean and (txn_inv in inv_num_clean or inv_num_clean in txn_inv):
                     matched_txn = txn
                     break
 

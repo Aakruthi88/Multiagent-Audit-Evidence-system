@@ -32,6 +32,8 @@ INVOICE_POSITIVES = [
     ("Invoice 200005", "200005"),
     ("Invoice #200005", "200005"),
     ("Tax Invoice: INV-2026-99", "INV-2026-99"),
+    ("INVOICE # 200003", "200003"),
+    ("INVOICE NUMBER: 200003", "200003"),
 ]
 
 INVOICE_NEGATIVES = [
@@ -39,6 +41,7 @@ INVOICE_NEGATIVES = [
     "INVALIDATED",
     "INVESTMENT",
     "Invoice Total: 500.00",
+    "Dora-Rana Pvt Ltd 71/14, Industrial Area INVOICE\nDATE 08-05-2026",
 ]
 
 PO_POSITIVES = [
@@ -48,6 +51,8 @@ PO_POSITIVES = [
     ("PO: 100005", "100005"),
     ("Purchase Order #: PO-100005", "PO-100005"),
     ("Purchase Order No. 100005", "100005"),
+    ("PO # 100003", "100003"),
+    ("PO NUMBER: 100003", "100003"),
 ]
 
 PO_NEGATIVES = [
@@ -56,6 +61,7 @@ PO_NEGATIVES = [
     "POSITION",
     "IMPORT",
     "SUPPORTER",
+    "TECHGURUPLUS SOLUTIONS PVT LTD\nH-195, Sarita Vihar, New Delhi 110076 PURCHASE ORDER\nPhone: 011-4356 7890",
 ]
 
 GRN_POSITIVES = [
@@ -142,23 +148,33 @@ def test_po_number_regex_negatives():
     for text in PO_NEGATIVES:
         m = _RE_PO_NUMBER.search(text)
         if m:
-            extracted = m.group(1) if len(m.groups()) >= 1 else m.group(0)
-            assert extracted not in ("Box", "Date", "Position", "Import", "Supporter"), f"False positive extracted '{extracted}' from '{text}'"
+            extracted = None
+            for g in m.groups():
+                if g:
+                    extracted = g.strip()
+                    break
+            extracted = extracted or m.group(0)
+            assert extracted not in ("Box", "Date", "Position", "Import", "Supporter", "H-195", "Phone", "Sarita"), f"False positive extracted '{extracted}' from '{text}'"
 
 
 def test_invoice_number_regex_positives():
     for text, expected in INVOICE_POSITIVES:
         m = _RE_INV_NUMBER.search(text)
         assert m is not None, f"Failed to match valid Invoice text: '{text}'"
-        assert expected in m.group(1) or expected in m.group(0), f"Expected '{expected}' in match '{m.group(0)}' for '{text}'"
+        assert any(expected in (g or "") for g in m.groups()) or expected in m.group(0), f"Expected '{expected}' in match '{m.group(0)}' for '{text}'"
 
 
 def test_invoice_number_regex_negatives():
     for text in INVOICE_NEGATIVES:
         m = _RE_INV_NUMBER.search(text)
         if m:
-            extracted = m.group(1) if len(m.groups()) >= 1 else m.group(0)
-            assert extracted not in ("INVENT", "INVALIDATED", "INVESTMENT", "500.00"), f"False positive extracted '{extracted}' from '{text}'"
+            extracted = None
+            for g in m.groups():
+                if g:
+                    extracted = g.strip()
+                    break
+            extracted = extracted or m.group(0)
+            assert extracted not in ("INVENT", "INVALIDATED", "INVESTMENT", "500.00", "71/14", "Industrial"), f"False positive extracted '{extracted}' from '{text}'"
 
 
 def test_grn_number_regex_positives():

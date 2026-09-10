@@ -360,8 +360,11 @@ _RE_GST         = re.compile(r'(?:GST|IGST|CGST|SGST)\s*(?:@[\d.]+%?)?\s*[:\n\s]
 _RE_TOTAL       = re.compile(r'(?<!\bSub)(?<!\bSub\s)(?:Grand\s*)?Total\s*[:\n\s]*' + _RE_CURRENCY + r'([,\d]+\.\d{2})', re.I)
 # PO number: look for PO #, PO NUMBER, Purchase Order No, etc.
 _RE_PO_NUMBER   = re.compile(
-    r'\b(?:P\.?O\.?\s*(?:NUMBER|No\.?|#)?|Purchase\s*Order\s*(?:Number|No\.?|#)?)\s*[:\n\s\-]*'
-    r'(?!(?:BOX|DATE|TERMS|TOTAL|AMOUNT|LINE|VIA|METHOD|REQUISITIONER|SHIP)\b)([A-Za-z0-9\-]{3,30})',
+    r'(?:\b(?:(?:P\.?O\.?\s*(?:#|NUMBER|NUM|NO\.?|ID)|Purchase\s*Order\s*(?:#|NUMBER|NUM|NO\.?|ID))\s*[:\-]?\s*'
+    r'|\bPO\s*[:#\-]\s*'
+    r'|\bPO\s+(?=\d{4,10}\b)'
+    r')(?!(?:BOX|DATE|TERMS|TOTAL|AMOUNT|LINE|VIA|METHOD|REQUISITIONER|SHIP|PHONE|DUE|TO|VENDOR|BUYER|TEL|FAX|EMAIL|ADDR)\b)([A-Za-z0-9\-]{3,30})'
+    r'|\b(PO[-_/]?[0-9][0-9A-Za-z\-_/]{2,20})\b)',
     re.I
 )
 _RE_PO_DATE     = re.compile(
@@ -834,10 +837,14 @@ def _det_parse_po(text: str, pdf_path: Optional[str] = None) -> POExtraction:
     """
     # --- Identifiers ---
     po_m = _RE_PO_NUMBER.search(text)
-    if not po_m:
-        # Looser fallback with negative lookahead
-        po_m = re.search(r'\bPO\s*[#:\-]?\s*(?!(?:BOX|DATE|TERMS|TOTAL|AMOUNT|LINE|VIA|METHOD|REQUISITIONER|SHIP)\b)([A-Za-z0-9\-]{3,30})', text, re.I)
-    po_num = po_m.group(1).strip() if po_m else "UNKNOWN"
+    po_num = "UNKNOWN"
+    if po_m:
+        for g in po_m.groups():
+            if g:
+                cand = g.strip()
+                if cand.upper() not in ("DATE", "CUSTOMER", "DUE", "PO", "NO", "NUMBER", "TOTAL", "AMOUNT", "BOX", "PHONE", "TERMS", "SHIP", "TEL", "FAX", "EMAIL"):
+                    po_num = cand
+                    break
     _log_field("PO", "po_number", "RE_PO_NUMBER", po_m and po_m.group(0), po_num,
                "ok" if po_num != "UNKNOWN" else "missing")
 

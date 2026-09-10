@@ -937,11 +937,21 @@ def _extract_vendor(text: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 _RE_GRN_NUMBER = re.compile(
-    r'\b(?:GRN|Goods\s*Receipt\s*(?:Note)?|Goods\s*Received\s*(?:Note)?)\s*(?:Number|No\.?|#)?\s*[:#\-\s]*'
-    r'(?!(?:DATE|TOTAL|AMOUNT|CONDITION|REMARKS)\b)([A-Za-z0-9\-]{3,30})',
+    r'(?:\b(?:(?:GRN|Goods\s*Receipt\s*(?:Note)?|Goods\s*Received\s*(?:Note)?)\s*(?:#|NUMBER|NUM|NO\.?|ID)|Goods\s*Received\s*Note\s*:)\s*[:\-]?\s*'
+    r'|\bGRN\s*[:#\-]\s*'
+    r'|\bGRN\s+(?=\d{4,10}\b)'
+    r')(?!(?:DATE|TOTAL|AMOUNT|CONDITION|REMARKS|ITEM|DESC|QTY|UNIT|PRICE|SUPPLIER|VENDOR)\b)([A-Za-z0-9\-]{3,30})'
+    r'|\b(GRN[-_/]?[0-9][0-9A-Za-z\-_/]{2,20})\b',
     re.I
 )
-_RE_PO_REF     = re.compile(r'\bPO\s*(?:Ref|Reference|No\.?|Number)?[.:\n\s\-]*([A-Za-z0-9\-]+)', re.I)
+_RE_PO_REF     = re.compile(
+    r'(?:\b(?:PO\s*(?:Ref|Reference|No\.?|Number|#)|Purchase\s*Order\s*(?:Ref|Reference|No\.?|Number|#))\s*[:\-]?\s*'
+    r'|\bPO\s*[:#\-]\s*'
+    r'|\bPO\s+(?=\d{4,10}\b)'
+    r')(?!(?:BOX|DATE|TERMS|TOTAL|AMOUNT|LINE|VIA|METHOD|REQUISITIONER|SHIP|PHONE|DUE|TO|VENDOR|BUYER|TEL|FAX|EMAIL|ADDR)\b)([A-Za-z0-9\-]{3,30})'
+    r'|\b(PO[-_/]?[0-9][0-9A-Za-z\-_/]{2,20})\b',
+    re.I
+)
 _RE_GRN_DATE   = re.compile(
     r'(?:Date\s*(?:of\s*)?(?:Receipt|Received|GRN)?|Receipt\s*Date|GRN\s*Date|Date)\s*[:\n\s]*'
     r'(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4}[\/\-\.]\d{2}[\/\-\.]\d{2})',
@@ -1367,15 +1377,26 @@ def _det_parse_grn(text: str, pdf_path: Optional[str] = None) -> GRNExtraction:
     """Fully deterministic GRN extraction. Returns None for fields not found."""
 
     grn_m = _RE_GRN_NUMBER.search(text)
-    if not grn_m:
-        # Looser fallback
-        grn_m = re.search(r'\bGRN\s*[#:\-]?\s*([A-Za-z0-9\-]+)', text, re.I)
-    grn_num = grn_m.group(1).strip() if grn_m else "UNKNOWN"
+    grn_num = "UNKNOWN"
+    if grn_m:
+        for g in grn_m.groups():
+            if g:
+                cand = g.strip()
+                if cand.upper() not in ("DATE", "CUSTOMER", "DUE", "PO", "NO", "NUMBER", "TOTAL", "AMOUNT", "BOX", "PHONE", "TERMS", "SHIP", "TEL", "FAX", "EMAIL", "GOODS", "RECEIVED", "NOTE"):
+                    grn_num = cand
+                    break
     _log_field("GRN", "grn_number", "RE_GRN_NUMBER", grn_m and grn_m.group(0), grn_num,
                "ok" if grn_num != "UNKNOWN" else "missing")
 
     po_m = _RE_PO_REF.search(text)
-    po_ref = po_m.group(1).strip() if po_m else None
+    po_ref = None
+    if po_m:
+        for g in po_m.groups():
+            if g:
+                cand = g.strip()
+                if cand.upper() not in ("DATE", "CUSTOMER", "DUE", "PO", "NO", "NUMBER", "TOTAL", "AMOUNT", "BOX", "PHONE", "TERMS", "SHIP", "TEL", "FAX", "EMAIL"):
+                    po_ref = cand
+                    break
     _log_field("GRN", "po_ref_raw", "RE_PO_REF", po_m and po_m.group(0), po_ref,
                "ok" if po_ref else "missing")
 

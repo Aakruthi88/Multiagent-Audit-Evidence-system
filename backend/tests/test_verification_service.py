@@ -312,7 +312,94 @@ class TestScenario7_VendorMismatch:
         print(f"  ✅ Scenario 7 PASS — Vendor mismatch detected: score shown in check")
 
 
+class TestScenario8_GenericIdentifierExtractionAndMissingGRN:
+    """
+    Scenario from prompt (TXN-2026-365):
+    - PO extracts '100003' from 'PO # 100003' (not buyer address 'H-195')
+    - Invoice extracts '200003' from 'INVOICE # 200003' (not vendor address '71/14') and '100003' from 'PO REF 100003'
+    - Bank transaction extracts 'INV200003'
+    - Verification:
+      invoice.po_ref_raw == po.po_number (100003 == 100003) -> PASS
+      invoice.invoice_number == bank.extracted_invoice_number (200003 ↔ INV200003) -> PASS
+      missing GRN -> overall_status == 'incomplete', bundle.status == 'incomplete'
+    """
+
+    def test_txn_2026_365_clean_identifiers_missing_grn(self, db):
+        from app.services.extraction_service import extraction_service
+
+        bundle = make_bundle(db, "TXN-2026-365")
+
+        po_raw = """TECHGURUPLUS SOLUTIONS PVT LTD
+H-195, Sarita Vihar, New Delhi 110076 PURCHASE ORDER
+Phone: 011-4356 7890 DATE 02-05-2026
+PO # 100003
+VENDOR Alpha Beta Supplies Pvt Ltd
+ITEM # DESCRIPTION QTY UNIT PRICE TOTAL
+1 Office Chairs 10 1,000.00 10,000.00
+SUBTOTAL 10,000.00
+TAX (18%) 1,800.00
+TOTAL Rs. 11,800.00"""
+
+        inv_raw = """Alpha Beta Supplies Pvt Ltd 71/14, Industrial Area INVOICE
+DATE 08-05-2026
+INVOICE # 200003
+DUE DATE 07-06-2026
+PO REF 100003
+BILL TO TECHGURUPLUS SOLUTIONS PVT LTD
+DESCRIPTION TAXED AMOUNT
+Office Chairs (Qty 10 x 1,000.00) X 10,000.00
+Subtotal 10,000.00
+Tax due 1,800.00
+TOTAL $ 11,800.00"""
+
+        bank_raw = """MERIDIAN TRUST BANK STATEMENT OF ACCOUNT
+Account Number: 308-246-281948
+Statement Date: 15/05/2026
+15/05/2026 NEFT-Ref7655194-Alpha Beta Supplies-INV200003 11,800.00 843,344.23"""
+
+        # Add documents (PO, Invoice, Bank Statement — NO GRN)
+        doc_po = Document(bundle_id=bundle.bundle_id, doc_type="purchase_order", file_path="/tmp/po.pdf", file_hash="p1", raw_text=po_raw, extraction_status="pending")
+        doc_inv = Document(bundle_id=bundle.bundle_id, doc_type="invoice", file_path="/tmp/inv.pdf", file_hash="i1", raw_text=inv_raw, extraction_status="pending")
+        doc_bs = Document(bundle_id=bundle.bundle_id, doc_type="bank_statement", file_path="/tmp/bs.pdf", file_hash="b1", raw_text=bank_raw, extraction_status="pending")
+        db.add_all([doc_po, doc_inv, doc_bs])
+        db.commit()
+
+        # Extract all 3 documents
+        extraction_service.extract_document(db, doc_po)
+        extraction_service.extract_document(db, doc_inv)
+        extraction_service.extract_document(db, doc_bs)
+
+        po = db.query(PurchaseOrder).filter_by(bundle_id=bundle.bundle_id).first()
+        inv = db.query(Invoice).filter_by(bundle_id=bundle.bundle_id).first()
+        bs = db.query(BankStatement).filter_by(bundle_id=bundle.bundle_id).first()
+        txn = db.query(BankTransaction).filter_by(statement_id=bs.statement_id).first()
+
+        # Assert correct identifier extractions without address bleed
+        assert po.po_number == "100003", f"Expected '100003', got '{po.po_number}'"
+        assert inv.invoice_number == "200003", f"Expected '200003', got '{inv.invoice_number}'"
+        assert inv.po_ref_raw == "100003", f"Expected '100003', got '{inv.po_ref_raw}'"
+        assert txn.extracted_invoice_number in ("INV200003", "200003"), f"Expected 'INV200003' or '200003', got '{txn.extracted_invoice_number}'"
+
+        # Run verification
+        run = verification_service.run_all_checks(db, bundle)
+
+        from app.models.models import VerificationCheck
+        po_inv_check = db.query(VerificationCheck).filter_by(run_id=run.run_id, check_type="po_invoice_ref_match").first()
+        assert po_inv_check is not None
+        assert po_inv_check.status == "pass", f"Expected PO-Invoice match PASS, got {po_inv_check.status}"
+
+        pmt_check = db.query(VerificationCheck).filter_by(run_id=run.run_id, check_type="payment_amount_match").first()
+        assert pmt_check is not None
+        assert pmt_check.status == "pass", f"Expected payment match PASS, got {pmt_check.status}"
+
+        # Missing GRN should leave bundle as incomplete
+        assert run.overall_status == "incomplete"
+        assert bundle.status == "incomplete"
+        print(f"  ✅ Scenario 8 PASS — PO 100003 ↔ Inv 100003 MATCH, Inv 200003 ↔ Bank INV200003 MATCH, Missing GRN = INCOMPLETE")
+
+
 # ── Run directly ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v", "--tb=short"])
+

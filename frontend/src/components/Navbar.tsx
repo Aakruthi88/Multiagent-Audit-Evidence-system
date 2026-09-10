@@ -16,7 +16,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
         </div>
         <div>
           <div className="brand-title">Audit Evidence Assistant</div>
-          <div className="brand-subtitle">Deloitte Capstone Agentic Engine</div>
+          {/* <div className="brand-subtitle">Deloitte Capstone Agentic Engine</div> */}
         </div>
       </div>
 
