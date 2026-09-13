@@ -261,11 +261,11 @@ def _generate_narrative(
         + (f"\n\nDiscrepancies:\n{json.dumps(discrepancies, indent=2)}" if discrepancies else "")
     )
 
-    # ── 1. Call Ollama (local llama2:latest) ─────────────────────────────────
+    # ── 1. Call Ollama (local qwen2.5:3b) ───────────────────────────────────
     if settings.OLLAMA_HOST:
         try:
             payload = {
-                "model": settings.OLLAMA_MODEL or "llama2:latest",
+                "model": settings.OLLAMA_MODEL or "qwen2.5:3b",
                 "prompt": f"{_NARRATIVE_SYSTEM}\n\n{prompt}",
                 "stream": False,
                 "options": {

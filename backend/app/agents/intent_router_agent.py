@@ -127,11 +127,11 @@ def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
     """
     user_msg = "User question: " + json.dumps(user_query) + "\n\nGenerate the retrieval plan JSON."
 
-    # ── 1. Call Ollama (local llama2:latest) ─────────────────────────────────
+    # ── 1. Call Ollama (local qwen2.5:3b) ───────────────────────────────────
     if settings.OLLAMA_HOST:
         try:
             payload = {
-                "model": settings.OLLAMA_MODEL or "llama2:latest",
+                "model": settings.OLLAMA_MODEL or "qwen2.5:3b",
                 "prompt": _PLANNER_SYSTEM_PROMPT + "\n\n" + user_msg,
                 "format": "json",
                 "stream": False,

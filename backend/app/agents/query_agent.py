@@ -189,10 +189,10 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
 
     user_prompt = "User question: " + json.dumps(user_query) + "\n\nEvidence Table:\n" + evidence_json + verif_text
 
-    # ── 1. Call Ollama (local llama2:latest) ─────────────────────────────────
+    # ── 1. Call Ollama (local qwen2.5:3b) ───────────────────────────────────
     if settings.OLLAMA_HOST:
         try:
-            ollama_model = settings.OLLAMA_MODEL or "llama2:latest"
+            ollama_model = settings.OLLAMA_MODEL or "qwen2.5:3b"
             payload = {
                 "model": ollama_model,
                 "prompt": f"{system_prompt}\n\n{user_prompt}",

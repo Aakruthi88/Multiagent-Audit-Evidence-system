@@ -29,7 +29,7 @@ class LLMRouterService:
         model_used = "llm_fallback_router"
         tokens_used = 0
 
-        # 1. Ollama Local LLM Call (llama2:latest)
+        # 1. Ollama Local LLM Call (qwen2.5:3b)
         if settings.OLLAMA_HOST and query_text:
             decision, model_used, tokens_used = self._call_ollama_llm(query_text, bundle_id)
 

@@ -104,11 +104,11 @@ def _llm_adjudicate(borderline_checks: List[Dict[str, Any]]) -> List[LLMVerifica
         except Exception:
             return []
 
-    # Try Ollama (local llama2:latest)
+    # Try Ollama (local qwen2.5:3b)
     if settings.OLLAMA_HOST:
         try:
             payload = {
-                "model": settings.OLLAMA_MODEL or "llama2:latest",
+                "model": settings.OLLAMA_MODEL or "qwen2.5:3b",
                 "prompt": f"{_ADJUDICATION_SYSTEM}\n\n{user_msg}",
                 "format": "json",
                 "stream": False,

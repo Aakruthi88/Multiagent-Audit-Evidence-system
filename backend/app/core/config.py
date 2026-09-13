@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     OPENROUTER_BASE_URL: str = Field(default="https://openrouter.ai/api/v1", description="OpenRouter Base URL")
     
     OLLAMA_HOST: str = Field(default="http://localhost:11434", description="Ollama local host URL")
-    OLLAMA_MODEL: str = Field(default="llama2:latest", description="Ollama model fallback")
+    OLLAMA_MODEL: str = Field(default="qwen2.5:3b", description="Ollama model fallback")
     
     # Storage
     STORAGE_DIR: Path = Field(
