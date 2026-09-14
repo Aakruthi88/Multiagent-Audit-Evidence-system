@@ -25,36 +25,14 @@ from app.services.parsers import (
     GRNParser,
     BankStatementParser
 )
-from app.services.parsers.text_utils import extract_pdf_text
-
-
-def parse_date_flexible(date_str: Optional[str]) -> Optional[date]:
-    """Robustly parses date strings in YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY formats."""
-    if not date_str or not isinstance(date_str, str):
-        return None
-    cleaned = date_str.strip()
-
-    match = re.search(r'(\d{4}[-/.]\d{2}[-/.]\d{2}|\d{2}[-/.]\d{2}[-/.]\d{4})', cleaned)
-    if match:
-        cleaned = match.group(1)
-
-    formats = [
-        "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y",
-        "%Y/%m/%d", "%d.%m.%Y", "%Y.%m.%d"
-    ]
-    for fmt in formats:
-        try:
-            return datetime.strptime(cleaned, fmt).date()
-        except ValueError:
-            continue
-    return None
+from app.services.parsers.text_utils import extract_pdf_text, parse_date_flexible, normalize_date
 
 
 def format_date_iso(date_str: Optional[str]) -> str:
     """Returns ISO format date string YYYY-MM-DD or default today."""
-    parsed = parse_date_flexible(date_str)
-    if parsed:
-        return parsed.strftime("%Y-%m-%d")
+    norm = normalize_date(date_str)
+    if norm:
+        return norm
     return datetime.utcnow().strftime("%Y-%m-%d")
 
 

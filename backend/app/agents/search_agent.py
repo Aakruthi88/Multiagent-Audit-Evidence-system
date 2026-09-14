@@ -106,10 +106,9 @@ def _filter_document_fields(
         return doc
 
     req_set = {str(f).lower().strip() for f in required_fields if f}
-    always_keep = {"invoice_number", "po_number", "purchase_order", "grn_number", "account_number", "delivery_note_number", "vendor_name"}
 
     # Determine which fields are header fields vs line item fields
-    header_fields = {k: v for k, v in raw_header.items() if k.lower() in req_set or k.lower() in always_keep}
+    header_fields = {k: v for k, v in raw_header.items() if k.lower() in req_set}
 
     # Check if any requested fields are line-item fields
     line_item_field_names = {"description", "qty", "qty_received", "qty_ordered",
@@ -378,3 +377,71 @@ def search_node(state: BundleState) -> Dict[str, Any]:
         }
     finally:
         db.close()
+
+
+DOC_TYPE_LABELS = {
+    "invoice": "Invoice",
+    "purchase_order": "Purchase Order",
+    "grn": "GRN",
+    "bank_statement": "Bank Statement"
+}
+
+
+def _fetch_bundle_source_documents(
+    db: Session,
+    bundle_id: str,
+    required_documents: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve validated physical source documents strictly belonging to bundle_id.
+    Filters by required_documents if provided.
+    """
+    if not bundle_id:
+        return []
+
+    req_set = None
+    if required_documents and isinstance(required_documents, list) and len(required_documents) > 0:
+        req_set = {DOC_TYPE_MAPPING.get(d.lower().strip(), d.lower().strip()) for d in required_documents if isinstance(d, str)}
+
+    docs = db.query(Document).filter(Document.bundle_id == bundle_id).all()
+    source_docs = []
+
+    for d in docs:
+        dtype = DOC_TYPE_MAPPING.get(d.doc_type.lower().strip(), d.doc_type)
+        if req_set and dtype not in req_set:
+            continue
+
+        fname = Path(d.file_path).name if d.file_path else f"{dtype}.pdf"
+        label = DOC_TYPE_LABELS.get(dtype, dtype.replace("_", " ").title())
+
+        # Check for exact document number to make label specific
+        if dtype == "invoice":
+            inv = db.query(Invoice).filter(Invoice.bundle_id == bundle_id).first()
+            if inv and inv.invoice_number:
+                label = f"Invoice {inv.invoice_number}"
+        elif dtype == "purchase_order":
+            po = db.query(PurchaseOrder).filter(PurchaseOrder.bundle_id == bundle_id).first()
+            if po and po.po_number:
+                label = f"PO {po.po_number}"
+        elif dtype == "grn":
+            grn = db.query(GRN).filter(GRN.bundle_id == bundle_id).first()
+            if grn and grn.grn_number:
+                label = f"GRN {grn.grn_number}"
+        elif dtype == "bank_statement":
+            bs = db.query(BankStatement).filter(BankStatement.bundle_id == bundle_id).first()
+            if bs and bs.account_number:
+                label = f"Bank Statement ({bs.account_number})"
+
+        source_docs.append({
+            "document_id": str(d.document_id),
+            "doc_type": dtype,
+            "filename": fname,
+            "label": label,
+            "url": f"/api/v1/bundles/{bundle_id}/files/{fname}",
+            "bundle_id": str(bundle_id),
+        })
+
+    order = {"invoice": 1, "purchase_order": 2, "grn": 3, "bank_statement": 4}
+    source_docs.sort(key=lambda x: (order.get(x["doc_type"], 99), x["filename"]))
+    return source_docs
+

@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { FileText, CheckCircle, AlertTriangle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
-import { DocumentItem } from '../types';
-import { getDocumentDetail } from '../api/endpoints';
+import React, { useState, useEffect } from "react";
+import { FileText, ChevronDown, ChevronUp } from "lucide-react";
+import { DocumentItem } from "../types";
+import { getDocumentDetail } from "../api/endpoints";
+import { C, sans, mono, glassSoft, StatusBadge } from "../theme";
 
 interface DocumentPreviewCardProps {
   document: DocumentItem;
@@ -20,70 +21,102 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ docume
   }, [expanded, document.document_id, detail]);
 
   const docTitleMap: Record<string, string> = {
-    purchase_order: 'Purchase Order (PO)',
-    invoice: 'Vendor Invoice',
-    grn: 'Goods Received Note (GRN)',
-    bank_statement: 'Bank Statement / Narration',
-  };
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'success':
-        return <span className="badge badge-extracted"><CheckCircle size={12} /> Extracted</span>;
-      case 'pending':
-        return <span className="badge badge-extracting"><Clock size={12} /> Extracting</span>;
-      case 'failed':
-        return <span className="badge badge-failed"><AlertTriangle size={12} /> Failed</span>;
-      default:
-        return <span className="badge badge-uploaded">{status}</span>;
-    }
+    purchase_order: "Purchase Order (PO)",
+    invoice: "Vendor Invoice",
+    grn: "Goods Received Note (GRN)",
+    bank_statement: "Bank Statement / Narration",
   };
 
   return (
-    <div className="card" style={{ marginBottom: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div className="slot-icon" style={{ margin: 0, width: 36, height: 36 }}>
-            <FileText size={20} />
+    <div
+      style={{
+        ...glassSoft({
+          padding: "16px 20px",
+          marginBottom: 14,
+          background: "rgba(255,255,255,0.35)",
+        }),
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.75)",
+              border: `1px solid ${C.glassBorder}`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <FileText size={18} color={C.accent} />
           </div>
           <div>
-            <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>
+            <div style={{ fontWeight: 800, fontSize: 14.5, color: C.text, fontFamily: sans }}>
               {docTitleMap[document.doc_type] || document.doc_type}
             </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-              Hash: {document.file_hash.substring(0, 16)}...
+            <div style={{ fontSize: 12, color: C.textTertiary, fontFamily: mono, marginTop: 2 }}>
+              Hash: {document.file_hash ? document.file_hash.substring(0, 20) + "..." : "—"}
             </div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {getStatusBadge(document.extraction_status)}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <StatusBadge status={document.extraction_status} />
           <button
             onClick={() => setExpanded(!expanded)}
-            className="nav-btn"
-            style={{ padding: '4px 8px' }}
+            style={{
+              background: "rgba(255,255,255,0.5)",
+              border: `1px solid ${C.glassBorderSoft}`,
+              borderRadius: 8,
+              padding: "5px 8px",
+              cursor: "pointer",
+              color: C.textSecondary,
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 12,
+              fontFamily: sans,
+              fontWeight: 600,
+            }}
           >
-            {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            {expanded ? (
+              <>
+                <ChevronUp size={15} /> Hide
+              </>
+            ) : (
+              <>
+                <ChevronDown size={15} /> View data
+              </>
+            )}
           </button>
         </div>
       </div>
 
       {expanded && (
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-color)' }}>
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.glassBorderSoft}` }}>
           {detail ? (
             <div>
-              <h4 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 8 }}>
-                Extracted Structured JSON ({detail.extraction_model || 'Standard Model'}):
-              </h4>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.textTertiary, fontFamily: sans, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  Extracted Structured JSON ({detail.extraction_model || "Deterministic Engine"}):
+                </span>
+              </div>
               <pre
                 style={{
-                  background: 'rgba(0, 0, 0, 0.4)',
-                  padding: 12,
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: '0.8rem',
-                  color: '#a7f3d0',
-                  overflowX: 'auto',
-                  maxHeight: 240,
+                  background: "rgba(255,255,255,0.5)",
+                  border: `1px solid ${C.glassBorderSoft}`,
+                  padding: 14,
+                  borderRadius: 10,
+                  fontSize: 12,
+                  fontFamily: mono,
+                  color: C.text,
+                  overflowX: "auto",
+                  maxHeight: 260,
+                  lineHeight: 1.5,
                 }}
               >
                 {JSON.stringify(detail.extracted_data || {}, null, 2)}
@@ -91,28 +124,33 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ docume
 
               {detail.raw_text && (
                 <div style={{ marginTop: 12 }}>
-                  <h4 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.textTertiary, fontFamily: sans, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>
                     Raw Extracted Text Snippet:
-                  </h4>
+                  </div>
                   <p
                     style={{
-                      background: 'rgba(255, 255, 255, 0.02)',
-                      padding: 10,
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.8rem',
-                      color: 'var(--text-muted)',
-                      maxHeight: 120,
-                      overflowY: 'auto',
-                      whiteSpace: 'pre-wrap',
+                      background: "rgba(255, 255, 255, 0.4)",
+                      border: `1px solid ${C.glassBorderSoft}`,
+                      padding: 12,
+                      borderRadius: 10,
+                      fontSize: 12,
+                      fontFamily: mono,
+                      color: C.textSecondary,
+                      maxHeight: 140,
+                      overflowY: "auto",
+                      whiteSpace: "pre-wrap",
+                      margin: 0,
                     }}
                   >
-                    {detail.raw_text.substring(0, 500)}...
+                    {detail.raw_text.substring(0, 600)}...
                   </p>
                 </div>
               )}
             </div>
           ) : (
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Loading extraction details...</div>
+            <div style={{ fontSize: 13, color: C.textTertiary, fontFamily: sans, textAlign: "center", padding: 12 }}>
+              Loading extraction details...
+            </div>
           )}
         </div>
       )}

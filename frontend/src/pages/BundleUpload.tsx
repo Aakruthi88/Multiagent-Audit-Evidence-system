@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { UploadDropzone } from '../components/UploadDropzone';
-import { createBundle } from '../api/endpoints';
-import { DocType } from '../types';
+import React, { useState } from "react";
+import { UploadDropzone } from "../components/UploadDropzone";
+import { createBundle } from "../api/endpoints";
+import { DocType } from "../types";
+import { C, sans, glass } from "../theme";
+import { AlertOctagon } from "lucide-react";
 
 interface BundleUploadProps {
   onSuccess: (bundleId: string) => void;
@@ -16,7 +18,7 @@ export const BundleUpload: React.FC<BundleUploadProps> = ({ onSuccess }) => {
     setError(null);
 
     const formData = new FormData();
-    formData.append('txn_reference', txnRef);
+    formData.append("txn_reference", txnRef);
 
     Object.entries(files).forEach(([type, file]) => {
       if (file) {
@@ -30,7 +32,7 @@ export const BundleUpload: React.FC<BundleUploadProps> = ({ onSuccess }) => {
       onSuccess(created.bundle_id);
     } catch (err: any) {
       setIsLoading(false);
-      const msg = err.response?.data?.detail || err.message || 'Failed to upload audit bundle';
+      const msg = err.response?.data?.detail || err.message || "Failed to upload audit bundle";
       setError(msg);
     }
   };
@@ -40,16 +42,25 @@ export const BundleUpload: React.FC<BundleUploadProps> = ({ onSuccess }) => {
       {error && (
         <div
           style={{
-            background: 'rgba(239, 68, 68, 0.1)',
-            border: '1px solid rgba(239, 68, 68, 0.3)',
-            color: '#f87171',
-            padding: 16,
-            borderRadius: 'var(--radius-md)',
-            marginBottom: 24,
-            fontSize: '0.9rem',
+            ...glass({
+              background: C.dangerBg,
+              borderColor: C.dangerBorder,
+              padding: "16px 20px",
+              marginBottom: 20,
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              color: C.danger,
+              fontSize: 14,
+              fontFamily: sans,
+              fontWeight: 600,
+            }),
           }}
         >
-          <strong>Upload Error:</strong> {error}
+          <AlertOctagon size={18} color={C.danger} />
+          <div>
+            <strong>Upload Error:</strong> {error}
+          </div>
         </div>
       )}
       <UploadDropzone onUploadSubmit={handleUploadSubmit} isLoading={isLoading} />

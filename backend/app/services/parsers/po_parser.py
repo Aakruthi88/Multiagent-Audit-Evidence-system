@@ -36,7 +36,12 @@ except ImportError:
 from app.core.config import settings
 from app.schemas.extraction_schemas import POExtraction, POLineItemExtraction
 from app.services.parsers.base_parser import BaseDocumentParser, ExtractionResult
-from app.services.parsers.text_utils import preprocess_for_llm
+from app.services.parsers.text_utils import (
+    preprocess_for_llm,
+    clean_float,
+    normalize_date,
+    log_field_extraction,
+)
 from app.services.confidence import score_po_extraction
 
 logger = logging.getLogger(__name__)
@@ -103,37 +108,12 @@ Purchase Order Text:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers (DRY - centralized in text_utils)
 # ---------------------------------------------------------------------------
 
-def _f(val: Optional[str]) -> Optional[float]:
-    """Parse a numeric string (with commas) to float. Returns None on failure."""
-    if not val:
-        return None
-    try:
-        return float(str(val).replace(',', '').strip())
-    except (ValueError, TypeError):
-        return None
-
-
-def _norm_date(s: Optional[str]) -> Optional[str]:
-    """Convert any supported date format to ISO YYYY-MM-DD. Returns None on failure."""
-    if not s:
-        return None
-    for fmt in ('%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%Y-%m-%d', '%Y/%m/%d', '%m/%d/%Y'):
-        try:
-            return datetime.strptime(s.strip(), fmt).strftime('%Y-%m-%d')
-        except ValueError:
-            continue
-    return None
-
-
-def _log_field(doc_type: str, field: str, pattern_desc: str, raw_match: Any, parsed: Any, status: str):
-    """Emit a structured debug log for a single extracted field."""
-    logger.debug(
-        f"[{doc_type}] field={field!r:20s}  pattern={pattern_desc!r:30s}  "
-        f"raw={str(raw_match)!r:30s}  parsed={str(parsed)!r:20s}  status={status}"
-    )
+_f = clean_float
+_norm_date = normalize_date
+_log_field = log_field_extraction
 
 
 # ---------------------------------------------------------------------------

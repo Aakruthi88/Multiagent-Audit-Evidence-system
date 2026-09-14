@@ -8,10 +8,11 @@ before handing it to an LLM or a deterministic parser.
 """
 
 import re
+from datetime import datetime, date
 import fitz          # PyMuPDF
 import pdfplumber
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -171,3 +172,60 @@ def preprocess_for_llm(text: str) -> str:
     text = remove_page_headers_footers(text)
     text = normalize_whitespace_in_table(text)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Shared Field / Numeric / Date Parsing Utilities (DRY)
+# ---------------------------------------------------------------------------
+
+def clean_float(val: Any) -> Optional[float]:
+    """Parse a numeric string or number (with commas) to float. Returns None on failure."""
+    if val is None or val == "":
+        return None
+    try:
+        return float(str(val).replace(',', '').strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def normalize_date(s: Optional[str]) -> Optional[str]:
+    """Convert any supported date format to ISO YYYY-MM-DD string. Returns None on failure."""
+    if not s or not isinstance(s, str):
+        return None
+    for fmt in ('%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%Y-%m-%d', '%Y/%m/%d', '%m/%d/%Y'):
+        try:
+            return datetime.strptime(s.strip(), fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    return None
+
+
+def parse_date_flexible(date_str: Optional[str]) -> Optional[date]:
+    """Robustly parses date strings in YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY formats into datetime.date."""
+    if not date_str or not isinstance(date_str, str):
+        return None
+    cleaned = date_str.strip()
+
+    match = re.search(r'(\d{4}[-/.]\d{2}[-/.]\d{2}|\d{2}[-/.]\d{2}[-/.]\d{4})', cleaned)
+    if match:
+        cleaned = match.group(1)
+
+    formats = [
+        "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y",
+        "%Y/%m/%d", "%d.%m.%Y", "%Y.%m.%d"
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def log_field_extraction(doc_type: str, field: str, pattern_desc: str, raw_match: Any, parsed: Any, status: str):
+    """Emit a structured debug log for a single extracted field."""
+    logger.debug(
+        f"[{doc_type}] field={field!r:20s}  pattern={pattern_desc!r:30s}  "
+        f"raw={str(raw_match)!r:30s}  parsed={str(parsed)!r:20s}  status={status}"
+    )
+

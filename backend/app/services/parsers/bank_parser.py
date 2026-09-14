@@ -28,6 +28,7 @@ except ImportError:
 
 from app.schemas.extraction_schemas import BankExtraction, BankTxnExtraction
 from app.services.parsers.base_parser import BaseDocumentParser, ExtractionResult
+from app.services.parsers.text_utils import normalize_date
 from app.services.confidence import score_bank_extraction
 
 logger = logging.getLogger(__name__)
@@ -90,13 +91,8 @@ def _parse_amount(raw: str) -> float:
 
 
 def _parse_date_to_iso(date_str: str) -> str:
-    from datetime import datetime
-    for fmt in ('%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%Y-%m-%d', '%Y/%m/%d'):
-        try:
-            return datetime.strptime(date_str.strip(), fmt).strftime('%Y-%m-%d')
-        except ValueError:
-            continue
-    return date_str.strip()
+    norm = normalize_date(date_str)
+    return norm if norm else (date_str.strip() if date_str else "")
 
 
 def _extract_narration_refs(narration: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:

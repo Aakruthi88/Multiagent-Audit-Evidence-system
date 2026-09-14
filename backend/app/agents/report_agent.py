@@ -432,6 +432,9 @@ def report_summary_node(state: BundleState) -> Dict[str, Any]:
 
     exec_summary = _enforce_monetary_integrity(exec_summary, evidence)
 
+    from app.agents.search_agent import _fetch_bundle_source_documents
+    source_docs = _fetch_bundle_source_documents(db, bundle_id)
+
     report_json = {
         "report_type": "summary",
         "bundle_id": bundle_id,
@@ -445,6 +448,7 @@ def report_summary_node(state: BundleState) -> Dict[str, Any]:
         "discrepancies_count": len(failed_checks),
         "discrepancies": _sort_by_severity(discrepancies),
         "evidence": evidence,
+        "source_documents": source_docs,
         "executive_summary": exec_summary,
         "note": exec_summary,
         "narrative_source": narrative_source,
@@ -511,6 +515,9 @@ def report_detailed_node(state: BundleState) -> Dict[str, Any]:
         f"due to {len(failed_checks)} failed check(s) and {len(discrepancies)} discrepancy(ies)."
     )
 
+    from app.agents.search_agent import _fetch_bundle_source_documents
+    source_docs = _fetch_bundle_source_documents(db, bundle_id)
+
     report_json = {
         "report_type": "detailed",
         "bundle_id": bundle_id,
@@ -521,6 +528,7 @@ def report_detailed_node(state: BundleState) -> Dict[str, Any]:
         "executive_summary": narrative,
         "narrative_source": narrative_source,
         "evidence": evidence,
+        "source_documents": source_docs,
         "failed_checks": failed_checks,
         "discrepancies": _sort_by_severity(discrepancies),
         "discrepancies_count": len(failed_checks),

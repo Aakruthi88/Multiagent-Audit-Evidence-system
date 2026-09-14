@@ -267,7 +267,7 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
 
     logger.info(f"[IntentRouterAgent] Resolved bundle_id: {resolved_bid}, matches: {matches}")
 
-    if plan.report_required or plan.verification_required:
+    if resolved_bid and (plan.report_required or plan.verification_required):
         action = "reverify"
     else:
         action = "status_query"

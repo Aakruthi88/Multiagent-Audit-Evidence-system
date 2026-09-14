@@ -137,6 +137,12 @@ def _route_after_search(state: BundleState) -> str:
     verif_req = plan.get("verification_required")
     report_req = plan.get("report_required")
     action = state.get("action")
+    bundle_id = state.get("bundle_id")
+
+    # If no specific bundle_id is resolved, route to query_node for QA / global status synthesis
+    if not bundle_id:
+        logger.info("[graph] Routing after search: -> 'query' (no resolved bundle_id, delegating to query_node)")
+        return "query"
 
     if verif_req is True or report_req is True or action in ("reverify", "regenerate_report", "new_bundle_run"):
         logger.info(f"[graph] Routing after search: -> 'verify' (verification_required={verif_req}, report_required={report_req}, action='{action}')")

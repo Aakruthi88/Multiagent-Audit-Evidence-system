@@ -303,8 +303,8 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
     if not bundle_ids_found:
         sem_matches = semantic_search_documents(db, q_text, top_k=5)
         for sm in sem_matches:
-            # Score threshold check to avoid irrelevant document false positives
-            if sm.get("score", 0.0) >= 0.20 and sm.get("bundle_id"):
+            # Score threshold check (>= 0.35) to avoid irrelevant document false positives
+            if sm.get("score", 0.0) >= 0.35 and sm.get("bundle_id"):
                 b_id = sm["bundle_id"]
                 matches.append({
                     "entity_type": "semantic_search",
@@ -314,18 +314,6 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
                     "score": sm.get("score"),
                 })
                 bundle_ids_found.add(b_id)
-
-    # ── Strategy 12: General Audit / Discrepancy queries without exact ID ──────
-    if not bundle_ids_found and any(k in q_lower for k in ["discrepanc", "anomaly", "anomalies", "mismatch", "audit", "evidence", "supports this transaction"]):
-        latest_bundle = db.query(AuditBundle).order_by(AuditBundle.created_at.desc()).first()
-        if latest_bundle:
-            b_id = str(latest_bundle.bundle_id)
-            matches.append({
-                "entity_type": "general_audit",
-                "entity_value": latest_bundle.txn_reference or "latest_bundle",
-                "bundle_id": b_id
-            })
-            bundle_ids_found.add(b_id)
 
     # De-duplicate matches
     unique_matches = []
@@ -351,7 +339,19 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
             }
         }
 
-    primary_bundle_id = list(bundle_ids_found)[0]
+    # Cross-bundle check: if multiple distinct bundles were found for explicit document IDs
+    if len(bundle_ids_found) > 1:
+        # Check if one bundle has the majority of explicit document matches
+        doc_matches_per_bundle = {}
+        for m in unique_matches:
+            bid = m["bundle_id"]
+            doc_matches_per_bundle[bid] = doc_matches_per_bundle.get(bid, 0) + 1
+        sorted_bundles = sorted(doc_matches_per_bundle.items(), key=lambda x: x[1], reverse=True)
+        primary_bundle_id = sorted_bundles[0][0]
+        logger.info(f"[EntityResolver] Multiple bundles matched for query '{query}': {bundle_ids_found}. Using most specific: {primary_bundle_id}")
+    else:
+        primary_bundle_id = list(bundle_ids_found)[0]
+
     logger.info(f"[EntityResolver] Resolved query '{query}' -> matches={unique_matches}, primary_bundle={primary_bundle_id}")
 
     return {

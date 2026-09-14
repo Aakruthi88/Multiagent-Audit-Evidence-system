@@ -750,7 +750,12 @@ import fitz  # PyMuPDF
 from app.core.config import settings
 from app.schemas.extraction_schemas import GRNExtraction, GRNLineItemExtraction
 from app.services.parsers.base_parser import BaseDocumentParser, ExtractionResult
-from app.services.parsers.text_utils import preprocess_for_llm
+from app.services.parsers.text_utils import (
+    preprocess_for_llm,
+    clean_float,
+    normalize_date,
+    log_field_extraction,
+)
 from app.services.confidence import score_grn_extraction
 
 logger = logging.getLogger(__name__)
@@ -828,31 +833,13 @@ GRN Document Text:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _f(val: Optional[str]) -> Optional[float]:
-    if not val:
-        return None
-    try:
-        return float(str(val).replace(',', '').strip())
-    except (ValueError, TypeError):
-        return None
+# ---------------------------------------------------------------------------
+# Helpers (DRY - centralized in text_utils)
+# ---------------------------------------------------------------------------
 
-
-def _norm_date(s: Optional[str]) -> Optional[str]:
-    if not s:
-        return None
-    for fmt in ('%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y', '%Y-%m-%d', '%Y/%m/%d', '%m/%d/%Y'):
-        try:
-            return datetime.strptime(s.strip(), fmt).strftime('%Y-%m-%d')
-        except ValueError:
-            continue
-    return None
-
-
-def _log_field(doc_type: str, field: str, pattern_desc: str, raw_match: Any, parsed: Any, status: str):
-    logger.debug(
-        f"[{doc_type}] field={field!r:20s}  pattern={pattern_desc!r:30s}  "
-        f"raw={str(raw_match)!r:30s}  parsed={str(parsed)!r:20s}  status={status}"
-    )
+_f = clean_float
+_norm_date = normalize_date
+_log_field = log_field_extraction
 
 
 # ---------------------------------------------------------------------------
