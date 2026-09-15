@@ -102,7 +102,7 @@ def _filter_document_fields(
     raw_line_items: List[Dict[str, Any]],
     required_fields: Any
 ) -> Optional[Dict[str, Any]]:
-    """Filter document header and line item fields according to required_fields. Preserves complete evidence by default."""
+    """Filter document header and line item fields according to required_fields."""
     is_all = True
     if required_fields and isinstance(required_fields, list) and len(required_fields) > 0:
         if not any(str(f).lower() == "all" for f in required_fields):
@@ -116,15 +116,16 @@ def _filter_document_fields(
 
     req_set = {str(f).lower().strip() for f in required_fields if f}
 
-    # Always preserve core identity and financial fields so document identification is never lost
     header_fields = {
         k: v for k, v in raw_header.items()
-        if k.lower() in req_set or k.lower() in CORE_IDENTITY_FIELDS
+        if k.lower() in req_set
     }
 
     # Check if any requested fields are line-item fields
-    line_item_field_names = {"description", "qty", "qty_received", "qty_ordered",
-                             "unit_price", "line_total", "item_code", "line_items", "items"}
+    line_item_field_names = {
+        "description", "qty", "qty_received", "qty_ordered",
+        "unit_price", "line_total", "item_code", "line_items", "items"
+    }
     wants_line_items = bool(req_set & line_item_field_names)
 
     result_doc = dict(header_fields)
@@ -136,7 +137,7 @@ def _filter_document_fields(
             if keep_all_item_keys:
                 filtered_items.append(dict(item))
             else:
-                filtered_item = {k: v for k, v in item.items() if k.lower() in req_set or k.lower() in ("description", "item_code")}
+                filtered_item = {k: v for k, v in item.items() if k.lower() in req_set}
                 if filtered_item:
                     filtered_items.append(filtered_item)
         if filtered_items:

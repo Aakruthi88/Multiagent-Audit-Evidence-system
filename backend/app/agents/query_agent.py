@@ -402,7 +402,8 @@ Checks Passed: {passed_count}, Checks Failed: {failed_count}, Warnings: {warning
 {findings_str}"""
 
 
-_VERIFICATION_SYSTEM_PROMPT = """You are an enterprise Audit Intelligence Assistant.
+_VERIFICATION_SYSTEM_PROMPT = GROUNDING_RULES + """
+You are an enterprise Audit Intelligence Assistant.
 The deterministic verification engine has executed all 3-way and 4-way matching rules against the source documents and is the AUTHORITATIVE SOLE SOURCE OF TRUTH.
 
 Your task is to write a concise, professional natural-language audit explanation paragraph that directly answers the user's specific question (e.g. whether documents match, why a transaction was flagged, total amounts, or payment status).
@@ -474,7 +475,8 @@ def _build_result_metadata(evidence: dict, bundle_id: Optional[str]) -> dict:
 
 
 def _build_intent_system_prompt(intent: str = "") -> str:
-    return """You are an enterprise Audit Intelligence Assistant.
+    return GROUNDING_RULES + """
+You are an enterprise Audit Intelligence Assistant.
 Answer the user's exact question directly, concisely, and professionally using only the supplied evidence.
 The supplied evidence contains the verified, matching records retrieved for the query.
 Do not invent facts, numbers, or dates.
@@ -865,13 +867,16 @@ def _build_structured_verification_summary(
 
     # Fallback to metadata labels if DB source docs empty
     if not source_docs:
-        if inv.get("invoice_number"):
+        req_set = None
+        if required_documents and isinstance(required_documents, list) and len(required_documents) > 0:
+            req_set = {str(d).lower().strip() for d in required_documents if isinstance(d, str)}
+        if (not req_set or "invoice" in req_set) and inv.get("invoice_number"):
             source_docs.append({"label": f"Invoice {inv.get('invoice_number')}", "type": "invoice", "doc_type": "invoice", "date": inv.get("invoice_date")})
-        if po.get("po_number"):
+        if (not req_set or "purchase_order" in req_set or "po" in req_set) and po.get("po_number"):
             source_docs.append({"label": f"PO {po.get('po_number')}", "type": "purchase_order", "doc_type": "purchase_order", "date": po.get("po_date")})
-        if grn.get("grn_number"):
+        if (not req_set or "grn" in req_set) and grn.get("grn_number"):
             source_docs.append({"label": f"GRN {grn.get('grn_number')}", "type": "grn", "doc_type": "grn", "date": grn.get("grn_date")})
-        if bank.get("account_number") or bank.get("payment_status") or bank.get("transactions"):
+        if (not req_set or "bank_statement" in req_set or "bank" in req_set) and (bank.get("account_number") or bank.get("payment_status") or bank.get("transactions")):
             source_docs.append({"label": "Bank Statement" + (f" ({bank.get('account_number')})" if bank.get("account_number") else ""), "type": "bank_statement", "doc_type": "bank_statement", "date": None})
 
     formatted_checks = []

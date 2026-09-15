@@ -236,11 +236,19 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
     user_query = state.get("user_query") or ""
     bundle_id_input = state.get("bundle_id")
 
-    if action_in == "new_bundle_run":
-        logger.info(f"[IntentRouterAgent] Pass-through for new_bundle_run on bundle {bundle_id_input}")
+    if action_in in ("new_bundle_run", "reverify", "regenerate_report"):
+        logger.info(f"[IntentRouterAgent] Direct action pass-through for '{action_in}' on bundle {bundle_id_input}")
         return {
-            "action": "new_bundle_run",
+            "action": action_in,
             "bundle_id": bundle_id_input,
+            "retrieval_plan": {
+                "intent": "verification" if action_in == "reverify" else "full_audit",
+                "bundle_reference": str(bundle_id_input) if bundle_id_input else None,
+                "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"],
+                "required_fields": "all",
+                "verification_required": True,
+                "report_required": action_in in ("regenerate_report", "new_bundle_run"),
+            }
         }
 
     logger.info(f"[IntentRouterAgent] Analyzing query: '{user_query}'")
