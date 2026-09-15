@@ -455,11 +455,14 @@ def _build_result_metadata(evidence: dict, bundle_id: Optional[str]) -> dict:
     inv = evidence.get("invoice") or {}
     po = evidence.get("purchase_order") or {}
     grn = evidence.get("grn") or {}
+    bank = evidence.get("bank_statement") or {}
     vendor = evidence.get("vendor_name") or inv.get("vendor_name") or po.get("vendor_name")
 
-    found = bool(inv or po or grn or evidence.get("bank_statement"))
+    found = bool(inv or po or grn or bank)
+    status = "VERIFIED" if found else "NOT FOUND"
     return {
         "found": found,
+        "status": status,
         "ambiguous": False,
         "bundle_id": bundle_id,
         "vendor_name": vendor,
@@ -473,8 +476,10 @@ def _build_result_metadata(evidence: dict, bundle_id: Optional[str]) -> dict:
 def _build_intent_system_prompt(intent: str = "") -> str:
     return """You are an enterprise Audit Intelligence Assistant.
 Answer the user's exact question directly, concisely, and professionally using only the supplied evidence.
+The supplied evidence contains the verified, matching records retrieved for the query.
 Do not invent facts, numbers, or dates.
 State specific document numbers, values, and vendor names directly in the opening sentence.
+Do not claim that the document is missing or not mentioned when its details are present in the evidence table.
 Provide a clear, natural-language explanation in 1-2 concise paragraphs.
 Do not output markdown section headers or raw data dumps.
 Return only the final answer."""
@@ -484,10 +489,12 @@ def _is_verification_query(user_query: str, plan: Optional[dict], verification_i
     if plan:
         if plan.get("verification_required") is True:
             return True
-        if plan.get("intent") in ("comparison", "verification"):
+        if plan.get("intent") in ("comparison", "verification", "full_audit"):
             return True
+        if plan.get("intent") in ("lookup", "field_lookup", "payment_lookup") and plan.get("verification_required") is False:
+            return False
     q = (user_query or "").lower()
-    verif_keywords = ["verify", "verification", "3-way", "4-way", "three-way", "four-way", "match", "compare", "discrepanc", "flagged", "mismatch"]
+    verif_keywords = ["verify", "verification", "3-way", "4-way", "three-way", "four-way", "compare"]
     if any(k in q for k in verif_keywords) and verification_info and (verification_info.get("checks") or verification_info.get("verdict")):
         return True
     return False
@@ -601,7 +608,7 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
 
     logger.warning("[QueryAgent] LLM generation unavailable — returning deterministic template answer")
     template_facts = _build_template_answer(user_query, evidence, plan)
-    if verification_info and verification_info.get("verdict"):
+    if is_verif and verification_info and verification_info.get("verdict"):
         verdict_str = verification_info.get("verdict", "").upper()
         return f"Deterministic Verification Verdict: {verdict_str}\n\n{template_facts}"
     return template_facts
@@ -746,16 +753,41 @@ def _build_structured_verification_summary(
     warning_count = sum(1 for c in checks if (c.get("status") or "").lower() == "warning")
     disc_count = len(discrepancies) if discrepancies else (failed_count + warning_count)
 
+    # Ensure canonical evidence has all documents for complete financial & match reporting
     inv = evidence.get("invoice") or {}
     po = evidence.get("purchase_order") or {}
     grn = evidence.get("grn") or {}
     bank = evidence.get("bank_statement") or {}
+
+    if db and bundle_id and (not inv or not po or not grn or not bank):
+        try:
+            from app.agents.search_agent import _fetch_bundle_evidence
+            full_evidence = _fetch_bundle_evidence(db, bundle_id, {"required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all"})
+            if not inv and full_evidence.get("invoice"):
+                inv = full_evidence["invoice"]
+            if not po and full_evidence.get("purchase_order"):
+                po = full_evidence["purchase_order"]
+            if not grn and full_evidence.get("grn"):
+                grn = full_evidence["grn"]
+            if not bank and full_evidence.get("bank_statement"):
+                bank = full_evidence["bank_statement"]
+        except Exception as exc:
+            logger.warning(f"[QueryAgent] Error filling canonical evidence in verification summary: {exc}")
+
     vendor = evidence.get("vendor_name") or inv.get("vendor_name") or po.get("vendor_name") or "N/A"
 
     paid_amt = None
+    inv_num = str(inv.get("invoice_number") or "").strip()
     if bank.get("transactions") and isinstance(bank.get("transactions"), list) and len(bank.get("transactions")) > 0:
-        t0 = bank.get("transactions")[0]
-        paid_amt = t0.get("amount") or t0.get("debit_amount") or t0.get("credit_amount")
+        txns = bank.get("transactions")
+        matched_txn = next(
+            (t for t in txns if inv_num and (inv_num.lower() in (t.get("extracted_invoice_number") or "").lower() or inv_num.lower() in (t.get("description") or "").lower())),
+            None
+        )
+        if not matched_txn:
+            matched_txn = next((t for t in txns if (t.get("debit") or t.get("debit_amount") or 0) > 0), txns[0])
+        if matched_txn:
+            paid_amt = matched_txn.get("amount") or matched_txn.get("debit_amount") or matched_txn.get("debit") or matched_txn.get("credit_amount") or matched_txn.get("credit")
     elif bank.get("payment_amount"):
         paid_amt = bank.get("payment_amount")
 
@@ -922,7 +954,7 @@ def query_node(state: BundleState) -> Dict[str, Any]:
             "bundle_id": None,
             "bundle": None,
             "answer": not_found_answer,
-            "result": {"found": False, "ambiguous": False, "bundle_id": None},
+            "result": {"found": False, "status": "NOT FOUND", "ambiguous": False, "bundle_id": None},
             "evidence": {},
             "verification_checks": [],
             "source_documents": [],
@@ -1079,9 +1111,18 @@ def query_node(state: BundleState) -> Dict[str, Any]:
 
     # Intent normalization
     intent = "field_lookup"
+    is_verif = False
     if retrieval_plan:
         raw_intent = retrieval_plan.get("intent", "lookup")
-        intent = raw_intent if raw_intent in ("payment_lookup", "comparison", "verification") else "field_lookup"
+        if raw_intent in ("comparison", "verification", "full_audit"):
+            intent = raw_intent
+            is_verif = True
+        elif raw_intent == "payment_lookup":
+            intent = "payment_lookup"
+        else:
+            intent = "field_lookup"
+        if retrieval_plan.get("verification_required") is True:
+            is_verif = True
 
     # Fetch validated source documents strictly locked to bundle_id
     req_docs = retrieval_plan.get("required_documents") if retrieval_plan else None
@@ -1089,7 +1130,7 @@ def query_node(state: BundleState) -> Dict[str, Any]:
     source_docs = []
     try:
         source_docs = _fetch_bundle_source_documents(db, bundle_id, req_docs)
-        if verification_info:
+        if is_verif and verification_info:
             verif_summary = _build_structured_verification_summary(
                 evidence=evidence_table,
                 verification_info=verification_info,
@@ -1112,14 +1153,14 @@ def query_node(state: BundleState) -> Dict[str, Any]:
         "bundle": bundle_meta,
         "answer": answer,
         "result": result_metadata,
-        "verification_summary": verif_summary,
-        "financials": verif_summary.get("financials") if verif_summary else None,
-        "document_matches": verif_summary.get("document_matches") if verif_summary else None,
-        "findings": verif_summary.get("findings") if verif_summary else None,
-        "detailed_checks": verif_summary.get("formatted_checks") if verif_summary else None,
-        "source_documents": (verif_summary.get("source_documents") if verif_summary and verif_summary.get("source_documents") else source_docs),
+        "verification_summary": verif_summary if is_verif else None,
+        "financials": (verif_summary.get("financials") if verif_summary and is_verif else None),
+        "document_matches": (verif_summary.get("document_matches") if verif_summary and is_verif else None),
+        "findings": (verif_summary.get("findings") if verif_summary and is_verif else None),
+        "detailed_checks": (verif_summary.get("formatted_checks") if verif_summary and is_verif else None),
+        "source_documents": (verif_summary.get("source_documents") if verif_summary and is_verif and verif_summary.get("source_documents") else source_docs),
         "evidence": evidence_table,
-        "verification_checks": checks_list,
+        "verification_checks": checks_list if is_verif else [],
         "retrieval_plan": retrieval_plan,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

@@ -300,7 +300,13 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
             bundle_ids_found.add(b_id)
 
     # ── Strategy 11: Semantic Vector Search (ChromaDB) ──────────────────────────
-    if not bundle_ids_found:
+    extracted_cands = extract_potential_entities(query)
+    explicit_id_candidates = [
+        c for c in extracted_cands if c.get("type_hint") in (
+            "bundle_uuid", "transaction_reference", "grn_number", "delivery_note", "invoice_number", "po_number", "bank_reference"
+        )
+    ]
+    if not bundle_ids_found and not explicit_id_candidates:
         sem_matches = semantic_search_documents(db, q_text, top_k=5)
         for sm in sem_matches:
             # Score threshold check (>= 0.35) to avoid irrelevant document false positives

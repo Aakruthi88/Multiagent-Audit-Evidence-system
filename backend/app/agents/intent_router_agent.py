@@ -81,6 +81,8 @@ EXAMPLES:
 - "What is the total amount of Invoice 200005?" -> {"intent": "lookup", "bundle_reference": "Invoice 200005", "required_documents": ["invoice"], "required_fields": ["total_amount"], "verification_required": false, "report_required": false}
 - "How many units were received for GRN-2026-0005?" -> {"intent": "lookup", "bundle_reference": "GRN-2026-0005", "required_documents": ["grn"], "required_fields": ["qty_received", "line_items"], "verification_required": false, "report_required": false}
 - "What items were ordered in PO 100005?" -> {"intent": "lookup", "bundle_reference": "PO 100005", "required_documents": ["purchase_order"], "required_fields": ["line_items"], "verification_required": false, "report_required": false}
+- "Show me the key details of TXN-2026-840." -> {"intent": "lookup", "bundle_reference": "TXN-2026-840", "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all", "verification_required": false, "report_required": false}
+- "Show me the key details of TXN-2026-935." -> {"intent": "lookup", "bundle_reference": "TXN-2026-935", "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all", "verification_required": false, "report_required": false}
 - "Verify invoice 200005 against PO 100005 and GRN-2026-0005" -> {"intent": "comparison", "bundle_reference": "Invoice 200005", "required_documents": ["invoice", "purchase_order", "grn"], "required_fields": "all", "verification_required": true, "report_required": false}
 - "Perform a 3-way match for Invoice 200005" -> {"intent": "comparison", "bundle_reference": "Invoice 200005", "required_documents": ["invoice", "purchase_order", "grn"], "required_fields": "all", "verification_required": true, "report_required": false}
 - "Generate an audit report for Invoice 200005" -> {"intent": "full_audit", "bundle_reference": "Invoice 200005", "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all", "verification_required": true, "report_required": true}
@@ -245,6 +247,11 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
         plan = _heuristic_fallback_plan(user_query)
     else:
         logger.info(f"[IntentRouterAgent] LLM plan adopted directly without heuristic override")
+
+    # Canonical rule: Any audit report, comparison, or verification requires all 4 documents
+    if plan.report_required or plan.verification_required or plan.intent in ("full_audit", "comparison", "verification"):
+        canonical_4_docs = ["invoice", "purchase_order", "grn", "bank_statement"]
+        plan.required_documents = canonical_4_docs
 
     plan_dict = plan.model_dump()
     logger.info(f"[IntentRouterAgent] Generated RetrievalPlan: {plan_dict}")

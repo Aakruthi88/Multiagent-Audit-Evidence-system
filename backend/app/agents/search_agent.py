@@ -88,6 +88,15 @@ LINE_ITEM_FIELD_NAMES = {
 }
 
 
+CORE_IDENTITY_FIELDS = {
+    "invoice_number", "po_number", "grn_number", "account_number", "vendor_name",
+    "invoice_date", "due_date", "po_date", "grn_date", "statement_date",
+    "delivery_note_number", "total_amount", "subtotal", "tax_amount",
+    "purchase_order", "po_ref_raw", "payment_status", "payment_date",
+    "payment_amount", "bank_reference", "received_condition"
+}
+
+
 def _filter_document_fields(
     raw_header: Dict[str, Any],
     raw_line_items: List[Dict[str, Any]],
@@ -107,8 +116,11 @@ def _filter_document_fields(
 
     req_set = {str(f).lower().strip() for f in required_fields if f}
 
-    # Determine which fields are header fields vs line item fields
-    header_fields = {k: v for k, v in raw_header.items() if k.lower() in req_set}
+    # Always preserve core identity and financial fields so document identification is never lost
+    header_fields = {
+        k: v for k, v in raw_header.items()
+        if k.lower() in req_set or k.lower() in CORE_IDENTITY_FIELDS
+    }
 
     # Check if any requested fields are line-item fields
     line_item_field_names = {"description", "qty", "qty_received", "qty_ordered",
@@ -228,6 +240,8 @@ def _fetch_bundle_evidence(db: Session, bundle_id: str, plan: Optional[Dict[str,
     if "grn" in req_docs:
         grn = db.query(GRN).filter(GRN.bundle_id == bundle_id).first()
         if grn:
+            po_for_grn = db.query(PurchaseOrder).filter(PurchaseOrder.bundle_id == bundle_id).first()
+            po_ref_grn = po_for_grn.po_number if po_for_grn else (grn.po_ref_raw if grn.po_ref_raw else None)
             grn_lines = db.query(GRNLineItem).filter(GRNLineItem.grn_id == grn.grn_id).all()
             raw_line_items = [
                 {
@@ -244,6 +258,9 @@ def _fetch_bundle_evidence(db: Session, bundle_id: str, plan: Optional[Dict[str,
                 "grn_date": str(grn.grn_date) if grn.grn_date else None,
                 "delivery_note_number": grn.delivery_note_number,
                 "received_condition": grn.received_condition,
+                "total_amount": float(grn.total_amount) if grn.total_amount is not None else None,
+                "po_number": po_ref_grn,
+                "purchase_order": po_ref_grn,
             }
             evidence["grn"] = _filter_document_fields(raw_header, raw_line_items, required_fields)
 

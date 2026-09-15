@@ -384,17 +384,10 @@ const SourceDocumentsSection: React.FC<{
   requiredDocuments?: string[];
   expanded: boolean;
   onToggle: () => void;
-}> = ({ files, requiredDocuments, expanded, onToggle }) => {
+}> = ({ files, expanded, onToggle }) => {
   if (!files || files.length === 0) return null;
 
-  let displayFiles = files;
-  if (requiredDocuments && Array.isArray(requiredDocuments) && requiredDocuments.length > 0) {
-    const matched = files.filter((f) => requiredDocuments.includes(f.doc_type));
-    if (matched.length > 0) {
-      displayFiles = matched;
-    }
-  }
-
+  const displayFiles = files;
   if (displayFiles.length === 0) return null;
 
   return (
@@ -1510,23 +1503,39 @@ export const AskQuery: React.FC = () => {
   };
 
   const verifSummary = result?.report?.verification_summary;
-  const isVerificationResponse = Boolean(verifSummary);
+  const isVerificationResponse = Boolean(
+    verifSummary &&
+      (result?.report?.query_type === "comparison" ||
+        result?.report?.query_type === "verification" ||
+        result?.report?.query_type === "full_audit" ||
+        result?.report?.answer_type === "comparison" ||
+        result?.report?.answer_type === "verification" ||
+        result?.action === "reverify" ||
+        result?.retrieval_plan?.verification_required === true ||
+        result?.report?.retrieval_plan?.verification_required === true)
+  );
 
   const isAuditReport = Boolean(
     result?.report &&
-      (result?.report?.report_type ||
-        result?.report?.executive_summary ||
-        result?.report?.verification_checks ||
-        result?.report?.verdict) &&
+      (result?.report?.report_type === "detailed" ||
+        result?.report?.report_type === "summary" ||
+        result?.report?.report_type === "full_audit" ||
+        result?.retrieval_plan?.report_required === true ||
+        result?.report?.retrieval_plan?.report_required === true) &&
       !isVerificationResponse
   );
 
-  const FIELD_LOOKUP_TYPES = new Set(["field_lookup", "lookup", "payment_lookup", "comparison"]);
+  const FIELD_LOOKUP_TYPES = new Set(["field_lookup", "lookup", "payment_lookup"]);
   const isFieldLookup = Boolean(
     !isVerificationResponse &&
       !isAuditReport &&
-      result?.report?.answer &&
-      (FIELD_LOOKUP_TYPES.has(result?.report?.query_type) || FIELD_LOOKUP_TYPES.has(result?.action))
+      (FIELD_LOOKUP_TYPES.has(result?.report?.query_type) ||
+        FIELD_LOOKUP_TYPES.has(result?.report?.answer_type) ||
+        FIELD_LOOKUP_TYPES.has(result?.action) ||
+        FIELD_LOOKUP_TYPES.has(result?.retrieval_plan?.intent) ||
+        result?.retrieval_plan?.verification_required === false ||
+        result?.report?.retrieval_plan?.verification_required === false ||
+        (result?.report?.answer && !result?.report?.bundles && result?.report?.query_type !== "status_query"))
   );
 
   const bundles: any[] = result?.report?.bundles ?? [];
@@ -1727,7 +1736,7 @@ export const AskQuery: React.FC = () => {
                 : isAuditReport
                 ? "Audit Report"
                 : isFieldLookup
-                ? "Audit Intelligence Answer"
+                ? "Audit Verification Result"
                 : isStatusQuery
                 ? "System Status & Bundle Search Results"
                 : "Audit Intelligence Response"}
@@ -1775,13 +1784,15 @@ export const AskQuery: React.FC = () => {
             <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
               <AiAnswerCard
                 answer={primaryAiAnswer}
-                statusColor={C.success}
+                statusColor={lookupResult?.found !== false ? C.success : C.danger}
+                statusLabel={lookupResult?.status || (lookupResult?.found !== false ? "VERIFIED" : "NOT FOUND")}
                 metadata={
                   lookupResult
                     ? {
                         vendor: lookupResult.vendor_name,
                         invoice_number: lookupResult.invoice_number,
                         po_number: lookupResult.po_number,
+                        grn_number: lookupResult.grn_number,
                       }
                     : undefined
                 }

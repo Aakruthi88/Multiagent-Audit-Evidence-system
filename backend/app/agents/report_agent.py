@@ -269,7 +269,7 @@ def _generate_narrative(
                 "prompt": f"{_NARRATIVE_SYSTEM}\n\n{prompt}",
                 "stream": False,
                 "options": {
-                    "num_predict": 250,
+                    "num_predict": 800,
                     "temperature": 0.2,
                 },
             }
@@ -306,7 +306,7 @@ def _generate_narrative(
                     {"role": "system", "content": _NARRATIVE_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                "max_tokens": 600,
+                "max_tokens": 800,
             }
             with httpx.Client(timeout=25.0) as client:
                 res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
