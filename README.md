@@ -90,6 +90,7 @@ flowchart TD
 | **Verification Agent** (`verification_agent.py`) | Applies deterministic rules, line-item arithmetic verification, and fuzzy string matching across all 4 document types. | `discrepancies`, `verdict`, `severity`, `confidence` |
 | **Report Generation Agent** (`report_agent.py`) | Formats verification results into executive audit summaries, detailed exception breakdowns, or clarification requests. | `report`, `summary`, `status` |
 | **Query Agent** (`query_agent.py`) | Generates grounded conversational answers with precise document citations and highlighted discrepancies. | `response`, `sources`, `discrepancy_count` |
+| **State Checkpointer** (`checkpointer.py`) | Persists durable execution snapshots per bundle thread ID to PostgreSQL / SQLite (`PostgresSaver` / `SqliteSaver`). | `checkpoints`, `resumption state` |
 | **Clarification Node** (`graph.py`) | Human-in-the-loop fallback when OCR/extraction confidence drops below safe threshold (70%). | Sets bundle status to `needs_review` |
 
 ---

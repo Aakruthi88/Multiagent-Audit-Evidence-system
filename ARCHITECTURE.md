@@ -229,6 +229,20 @@ class BundleState(TypedDict, total=False):
 8. **`report_not_found_agent`**:
    * Returns helpful, structured diagnostic messages when an entity or document reference cannot be resolved in the database.
 
+#### LangGraph State Persistence & Checkpointing (`backend/app/db/checkpointer.py`)
+
+The LangGraph compilation incorporates persistent checkpointing to ensure durable execution state, audit trail traceability, and session resumption:
+
+* **Dual Storage Backend (`get_checkpointer`)**:
+  * **Production (PostgreSQL)**: When `DATABASE_URL` targets PostgreSQL, `langgraph.checkpoint.postgres.PostgresSaver` is utilized backed by a `psycopg_pool.ConnectionPool`. Tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, etc.) are auto-initialized via `checkpointer.setup()`.
+  * **Development (SQLite)**: When running locally with SQLite, `langgraph.checkpoint.sqlite.SqliteSaver` persists state across backend restarts to `storage/checkpoints.db`.
+  * **In-Memory Fallback**: `MemorySaver` is retained as an automated fallback if persistent DB initialization fails.
+* **Thread & Request Isolation**:
+  * Every graph invocation is scoped to a unique `thread_id` passed via `config={"configurable": {"thread_id": ...}}`.
+  * The `CheckpointedStateGraph` wrapper automatically maps `state.get("bundle_id")` or `state.get("txn_reference")` to `thread_id` if omitted, preventing state crosstalk between independent audit bundles.
+* **State Retrieval & Time-Travel Inspection**:
+  * Previous agent execution states and historical checkpoints can be queried via `app_graph.get_state({"configurable": {"thread_id": bundle_id}})`.
+
 ---
 
 ### 3.4. Document Parsing & Extraction Subsystem (`backend/app/services/parsers`)

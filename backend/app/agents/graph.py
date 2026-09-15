@@ -22,7 +22,8 @@ Architecture:
 """
 
 import time
-from typing import Any, Dict
+import uuid
+from typing import Any, Dict, Optional
 
 from langgraph.graph import END, StateGraph
 
@@ -37,6 +38,7 @@ from app.agents.search_agent import search_node
 from app.agents.state import BundleState
 from app.agents.verification_agent import verification_node
 from app.core.logging import logger
+from app.db.checkpointer import get_checkpointer
 from app.db.session import SessionLocal
 from app.models.models import AgentExecutionLog
 
@@ -238,5 +240,50 @@ workflow.add_edge("report_summary",   END)
 workflow.add_edge("report_detailed",  END)
 workflow.add_edge("query",            END)
 
-compiled_graph = workflow.compile()
+# Checkpointer initialization (PostgreSQL / SQLite / Fallback)
+checkpointer = get_checkpointer()
+_compiled_inner = workflow.compile(checkpointer=checkpointer)
+
+
+class CheckpointedStateGraph:
+    """
+    Thread-isolated wrapper around LangGraph CompiledStateGraph.
+    Guarantees state isolation across concurrent audit bundles and user queries:
+    - Derives deterministic thread_id from bundle_id or txn_reference if not passed in config.
+    - Preserves existing invoke(), get_state(), get_state_history(), and update_state() APIs.
+    - Persists execution state to PostgreSQL (production) or SQLite (development/test).
+    """
+
+    def __init__(self, inner_graph, checkpointer_obj):
+        self._inner = inner_graph
+        self.checkpointer = checkpointer_obj
+
+    def invoke(self, input: Dict[str, Any], config: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        cfg = dict(config) if config else {}
+        configurable = dict(cfg.get("configurable") or {})
+        if "thread_id" not in configurable:
+            thread_id = None
+            if isinstance(input, dict):
+                thread_id = input.get("bundle_id") or input.get("txn_reference")
+            if not thread_id:
+                thread_id = f"session_{uuid.uuid4()}"
+            configurable["thread_id"] = str(thread_id)
+            cfg["configurable"] = configurable
+        return self._inner.invoke(input, config=cfg, **kwargs)
+
+    def get_state(self, config: Dict[str, Any], **kwargs):
+        return self._inner.get_state(config, **kwargs)
+
+    def get_state_history(self, config: Dict[str, Any], **kwargs):
+        return self._inner.get_state_history(config, **kwargs)
+
+    def update_state(self, config: Dict[str, Any], values: Dict[str, Any], as_node: Optional[str] = None):
+        return self._inner.update_state(config, values, as_node=as_node)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+compiled_graph = CheckpointedStateGraph(_compiled_inner, checkpointer)
 app_graph = compiled_graph
+
