@@ -73,6 +73,14 @@ class ExtractionService:
 
         # Dispatch to strategy parser
         result = parser.timed_extract(pdf_path=document.file_path, raw_text=raw_text)
+        return self.persist_extraction_result(db, document, result)
+
+    def persist_extraction_result(self, db: Session, document: Document, result: Any) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Persists an ExtractionResult to the database and logs execution details.
+        Safe to call from the main persistence loop following concurrent parsing.
+        """
+        doc_type = document.doc_type
 
         # Handle persistence if parsing was successful
         if result.success and result.extracted_obj:
@@ -144,8 +152,8 @@ class ExtractionService:
 
         # Extraction failed
         document.extraction_status = "failed"
-        document.extraction_confidence = result.confidence
-        document.extraction_model = result.model_used
+        document.extraction_confidence = result.confidence if result else 0.0
+        document.extraction_model = result.model_used if result else "unknown"
         db.commit()
 
         log_entry = AgentExecutionLog(
@@ -154,31 +162,36 @@ class ExtractionService:
             input_snapshot={
                 "document_id": str(document.document_id),
                 "doc_type": doc_type,
-                "raw_text": result.raw_text,
-                "cleaned_text": result.cleaned_text,
-                "prompt": result.prompt,
+                "raw_text": result.raw_text if result else None,
+                "cleaned_text": result.cleaned_text if result else None,
+                "prompt": result.prompt if result else None,
             },
-            output_snapshot=result.to_log_snapshot(),
-            model_used=result.model_used,
-            tokens_used=result.tokens_used,
-            latency_ms=result.latency_ms,
+            output_snapshot=result.to_log_snapshot() if result else {},
+            model_used=result.model_used if result else "unknown",
+            tokens_used=result.tokens_used if result else 0,
+            latency_ms=result.latency_ms if result else 0,
             status="failed",
-            error_message="; ".join(result.validation_errors) if result.validation_errors else "Extraction failed"
+            error_message="; ".join(result.validation_errors) if (result and result.validation_errors) else "Extraction failed"
         )
         db.add(log_entry)
         db.commit()
 
         logger.warning(
             f"Extraction failed for document {document.document_id} ({doc_type}): "
-            f"{result.validation_errors}"
+            f"{result.validation_errors if result else 'No result'}"
         )
-        return False, {"error": result.validation_errors or ["Extraction failed"]}
+        return False, {"error": (result.validation_errors if result else None) or ["Extraction failed"]}
 
     def _save_to_db(self, db: Session, document: Document, doc_type: str, extracted: Any):
         """Maps Pydantic extraction object directly to SQLAlchemy ORM models using flexible date parsing."""
         bundle_id = document.bundle_id
 
         if doc_type == "purchase_order":
+            existing_po = db.query(PurchaseOrder).filter(PurchaseOrder.document_id == document.document_id).first()
+            if existing_po:
+                db.delete(existing_po)
+                db.flush()
+
             vendor = self._get_or_create_vendor(db, extracted.vendor_name)
             po = PurchaseOrder(
                 document_id=document.document_id,
@@ -208,6 +221,11 @@ class ExtractionService:
                 db.add(line)
 
         elif doc_type == "invoice":
+            existing_inv = db.query(Invoice).filter(Invoice.document_id == document.document_id).first()
+            if existing_inv:
+                db.delete(existing_inv)
+                db.flush()
+
             vendor = self._get_or_create_vendor(db, extracted.vendor_name)
             po_match = None
             if extracted.po_ref_raw:
@@ -241,6 +259,11 @@ class ExtractionService:
                 db.add(line)
 
         elif doc_type == "grn":
+            existing_grn = db.query(GRN).filter(GRN.document_id == document.document_id).first()
+            if existing_grn:
+                db.delete(existing_grn)
+                db.flush()
+
             vendor = self._get_or_create_vendor(db, extracted.vendor_name or "Dora-Rana Pvt Ltd")
             po_match = None
             if extracted.po_ref_raw:
@@ -273,6 +296,11 @@ class ExtractionService:
                 db.add(line)
 
         elif doc_type == "bank_statement":
+            existing_bs = db.query(BankStatement).filter(BankStatement.document_id == document.document_id).first()
+            if existing_bs:
+                db.delete(existing_bs)
+                db.flush()
+
             bs = BankStatement(
                 document_id=document.document_id,
                 bundle_id=bundle_id,

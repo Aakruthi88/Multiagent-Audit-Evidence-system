@@ -138,7 +138,7 @@ def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
                 "format": "json",
                 "stream": False,
             }
-            with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
                 res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
                 if res.status_code == 200:
                     plan = _parse_plan(res.json().get("response", "{}"))
@@ -149,6 +149,10 @@ def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
                         logger.warning("[IntentRouterAgent] Ollama planner returned invalid JSON")
                 else:
                     logger.warning(f"[IntentRouterAgent] Ollama HTTP {res.status_code}: {res.text}")
+        except httpx.TimeoutException as exc:
+            logger.warning(f"[IntentRouterAgent] Ollama planner timed out (fast-fail): {exc}")
+        except httpx.ConnectError as exc:
+            logger.warning(f"[IntentRouterAgent] Ollama connection failed (fast-fail): {exc}")
         except Exception as exc:
             logger.warning(f"[IntentRouterAgent] Ollama planner error: {exc}")
 
