@@ -233,7 +233,18 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
             report_required=False,
         )
 
-    # 8. Overview / Cross-bundle / System status queries
+    # 8. Transaction / Bundle / Document details lookup (e.g. "Show me the key details of TXN-2026-840")
+    if any(k in q for k in ["key details", "details of", "show me details", "summary of", "details for", "txn-", "transaction details"]) and not any(k in q for k in ["failed", "flagged", "why was", "why is", "issue", "verify", "compare"]):
+        return RetrievalPlan(
+            intent="lookup",
+            bundle_reference=user_query,
+            required_documents=["invoice", "purchase_order", "grn", "bank_statement"],
+            required_fields="all",
+            verification_required=False,
+            report_required=False,
+        )
+
+    # 9. Overview / Cross-bundle / System status queries
     if any(k in q for k in ["show all", "list all", "all bundles", "overview", "all verified", "all invoices", "system status", "health"]):
         return RetrievalPlan(
             intent="lookup",

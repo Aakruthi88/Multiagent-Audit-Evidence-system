@@ -364,13 +364,77 @@ def _format_deterministic_verification_response(evidence: dict, verification_inf
     grn_total_str = _format_amount(grn.get("total_amount"))
     qty_str = _get_quantity_summary(evidence)
 
-    # Filter checks
-    relevant_checks = _filter_checks_for_query(checks, user_query)
-    if not relevant_checks:
-        relevant_checks = [c for c in checks if (c.get("status") or "").lower() != "not_applicable"]
+    # Transaction / Bank context if available (critical for investigation queries)
+    txn_details = []
+    if bank.get("transactions"):
+        for t in bank.get("transactions")[:3]:
+            t_ref = t.get("transaction_reference") or t.get("reference")
+            t_amt = _format_amount(t.get("amount") or t.get("debit_amount") or t.get("debit"))
+            t_st = t.get("status") or bank.get("payment_status") or "recorded"
+            t_date = t.get("date") or t.get("transaction_date")
+            desc = t.get("description") or t.get("narration")
+            ref_str = f" Ref: {t_ref}," if t_ref else ""
+            date_str = f" Date: {t_date}," if t_date else ""
+            desc_str = f" Narration: '{desc}'," if desc else ""
+            txn_details.append(f"- Transaction:{ref_str}{date_str} Debit: {t_amt}, Status: {t_st},{desc_str}".rstrip(","))
+    elif bank.get("payment_status") or bank.get("account_number"):
+        acc = bank.get("account_number", "N/A")
+        pst = bank.get("payment_status", "N/A")
+        txn_details.append(f"- Bank Account: {acc}, Payment Status: {pst}")
 
-    checks_blocks = [_format_check_block(c, evidence) for c in relevant_checks]
-    checks_str = "\n\n".join(checks_blocks) if checks_blocks else "No relevant verification checks recorded."
+    txn_section = ""
+    if txn_details:
+        txn_section = "\n### Linked Transaction & Payment Evidence:\n" + "\n".join(txn_details) + "\n"
+
+    # Determine check verbosity dynamically based on user query
+    q_lower = (user_query or "").lower()
+    wants_all_checks = any(k in q_lower for k in ["all check", "every check", "detailed check", "full check", "full report", "detailed report", "audit report"])
+
+    failed_or_warn = [c for c in checks if (c.get("status") or "").lower() in ("fail", "warning")]
+    prioritized_checks = _filter_checks_for_query(checks, user_query)
+
+    blocks_to_render = []
+    rendered_check_types = set()
+
+    if wants_all_checks:
+        for c in checks:
+            if (c.get("status") or "").lower() != "not_applicable":
+                blocks_to_render.append(_format_check_block(c, evidence))
+        checks_str = "\n\n".join(blocks_to_render) if blocks_to_render else "No relevant verification checks recorded."
+    else:
+        # 1. Always format all failed/warning checks in full
+        for c in failed_or_warn:
+            ct = c.get("check_type") or c.get("check_name")
+            rendered_check_types.add(ct)
+            blocks_to_render.append(_format_check_block(c, evidence))
+
+        # 2. Format query-prioritized checks in full
+        for c in prioritized_checks:
+            ct = c.get("check_type") or c.get("check_name")
+            if ct not in rendered_check_types and (c.get("status") or "").lower() != "not_applicable":
+                rendered_check_types.add(ct)
+                blocks_to_render.append(_format_check_block(c, evidence))
+
+        # 3. If everything passed and no specific checks prioritized, format top core checks
+        if not blocks_to_render:
+            core_types = ["po_invoice_total_match", "po_invoice_ref_match", "po_invoice_vendor_match"]
+            for c in checks:
+                ct = c.get("check_type") or c.get("check_name")
+                if ct in core_types and (c.get("status") or "").lower() != "not_applicable":
+                    rendered_check_types.add(ct)
+                    blocks_to_render.append(_format_check_block(c, evidence))
+
+        # 4. Compactly list any other passing checks without redundant multi-line bloat
+        other_passed = [
+            c for c in checks
+            if (c.get("status") or "").lower() == "pass" and (c.get("check_type") or c.get("check_name")) not in rendered_check_types
+        ]
+        if other_passed:
+            passed_names = [_CHECK_TITLES.get(c.get("check_type") or c.get("check_name"), (c.get("check_type") or c.get("check_name") or "Check").replace("_", " ").title()) for c in other_passed]
+            compact_passed_str = f"✓ Additional Passed Checks ({len(other_passed)}): " + ", ".join(passed_names)
+            blocks_to_render.append(compact_passed_str)
+
+        checks_str = "\n\n".join(blocks_to_render) if blocks_to_render else "No relevant verification checks recorded."
 
     # Findings / Exceptions with deduplication
     findings = []
@@ -404,8 +468,7 @@ Purchase Order: {po_num} (Total: {po_total_str})
 GRN: {grn_num} (Total: {grn_total_str})
 Vendor: {vendor}
 Quantity: {qty_str}
-Checks Passed: {passed_count}, Checks Failed: {failed_count}, Warnings: {warning_count}
-
+Checks Passed: {passed_count}, Checks Failed: {failed_count}, Warnings: {warning_count}{txn_section}
 ### Relevant Checks:
 {checks_str}
 
@@ -522,40 +585,60 @@ def _is_verification_query(user_query: str, plan: Optional[dict], verification_i
 
 
 def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = None, verification_info: Optional[dict] = None, bundle_id: Optional[str] = None) -> str:
-    """Synthesize plain-English QA answer via local Ollama strictly grounded in filtered evidence_table & verification results."""
+    """Synthesize plain-English QA answer via local Ollama strictly grounded in dynamically prepared evidence & verification results."""
     is_verif = _is_verification_query(user_query, plan, verification_info)
 
-    # If verification query, prepare deterministic report as source of truth
+    # 1. Dynamic Context Preparation based on Intent and Query Requirements
     deterministic_verif_report = ""
     if is_verif and verification_info:
         deterministic_verif_report = _format_deterministic_verification_response(evidence, verification_info, bundle_id, user_query)
 
-    # Filter evidence to send only relevant documents
+    # 2. Eliminate redundant evidence: only include document data needed for the query
     filtered_evidence = _filter_evidence_for_prompt(user_query, evidence, plan)
-    logger.info(f"[QueryAgent] Evidence sent to LLM: {json.dumps(filtered_evidence)}")
-    evidence_json = json.dumps(filtered_evidence, indent=2)
+    logger.info(f"[QueryAgent] Filtered evidence: {json.dumps(filtered_evidence)}")
+
+    # Check if user specifically requested line item details or unsummarized fields
+    q_lower = (user_query or "").lower()
+    needs_line_items = any(k in q_lower for k in ["line item", "itemized", "items ordered", "items received", "each item", "breakdown of items"])
 
     if is_verif and deterministic_verif_report:
         system_prompt = _VERIFICATION_SYSTEM_PROMPT
+        extra_context = ""
+        if needs_line_items:
+            extra_lines = {}
+            for doc_k in ("invoice", "purchase_order", "grn"):
+                if filtered_evidence.get(doc_k) and filtered_evidence[doc_k].get("line_items"):
+                    extra_lines[f"{doc_k}_line_items"] = filtered_evidence[doc_k]["line_items"]
+            if extra_lines:
+                extra_context = f"\n\nRequested Line Items:\n{json.dumps(extra_lines, indent=2)}"
+
         user_prompt = (
             f"User question: {json.dumps(user_query)}\n\n"
-            f"Authoritative Deterministic Verification Results (SOURCE OF TRUTH):\n{deterministic_verif_report}\n\n"
-            f"Evidence Documents Table:\n{evidence_json}\n\n"
-            f"Provide a complete, factually grounded answer directly answering the question using only the verified evidence above. "
-            f"Include relevant amounts (₹), dates, document references, and check/discrepancy findings where applicable. "
+            f"Authoritative Deterministic Verification Results (SOURCE OF TRUTH):\n{deterministic_verif_report}{extra_context}\n\n"
+            f"Provide a complete, factually grounded answer directly answering the user's question using the authoritative verification findings above. "
+            f"State what was verified, exact amounts in ₹, document references, and any discrepancies or failure reasons clearly. "
             f"If no failure reason or discrepancy exists in the retrieved evidence, state that clearly and do not invent any reasons."
         )
-        max_tokens = 350
+
+        # Dynamic token budget
+        verdict_str = (verification_info.get("verdict") or "").lower()
+        if verdict_str == "clean" and not verification_info.get("discrepancies"):
+            max_tokens = 200
+        elif any(k in q_lower for k in ["full report", "detailed report", "all checks", "audit report"]):
+            max_tokens = 500
+        else:
+            max_tokens = 350
     else:
         intent = plan.get("intent", "lookup") if plan else "lookup"
         system_prompt = _build_intent_system_prompt(intent)
+        evidence_json = json.dumps(filtered_evidence, indent=2)
         user_prompt = (
             f"User question: {json.dumps(user_query)}\n\n"
             f"Evidence Table:\n{evidence_json}\n\n"
             f"Provide a complete, factually grounded answer directly answering the question using only the verified evidence above. "
             f"State exact document numbers, values in ₹ (with subtotal and tax breakdown if available), dates, and vendor names."
         )
-        max_tokens = 250
+        max_tokens = 200
 
     # ── 1. Call Ollama (local qwen2.5:3b) ───────────────────────────────────
     if settings.OLLAMA_HOST:

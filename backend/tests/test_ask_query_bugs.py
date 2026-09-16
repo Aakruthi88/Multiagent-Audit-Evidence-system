@@ -42,8 +42,13 @@ def test_field_lookup_separation_po_items():
 
 
 def test_field_lookup_txn_840():
-    """Query 3: Show me the key details of TXN-2026-840. -> Field lookup only."""
-    query = "Show me the key details of TXN-2026-840."
+    """Query 3: Show me the key details of a bundle transaction. -> Field lookup only."""
+    db = SessionLocal()
+    bundle = db.query(AuditBundle).filter(AuditBundle.txn_reference != None).first()
+    txn_ref = bundle.txn_reference if bundle else "TXN-2026-895"
+    db.close()
+
+    query = f"Show me the key details of {txn_ref}."
     res = app_graph.invoke({"user_query": query})
     report = res.get("report") or {}
 
@@ -53,8 +58,13 @@ def test_field_lookup_txn_840():
 
 
 def test_field_lookup_txn_935():
-    """Query 4: Show me the key details of TXN-2026-935. -> Field lookup only."""
-    query = "Show me the key details of TXN-2026-935."
+    """Query 4: Show me the key details of another bundle transaction. -> Field lookup only."""
+    db = SessionLocal()
+    bundle = db.query(AuditBundle).filter(AuditBundle.txn_reference != None).offset(1).first()
+    txn_ref = bundle.txn_reference if bundle else "TXN-2026-895"
+    db.close()
+
+    query = f"Show me the key details of {txn_ref}."
     res = app_graph.invoke({"user_query": query})
     report = res.get("report") or {}
 
