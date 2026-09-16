@@ -101,8 +101,28 @@ def require_role(allowed_roles: List[str]) -> Callable:
 
 
 # Role dependencies
-require_auditor = require_role(["auditor", "lead"])
-require_lead = require_role(["lead"])
+require_admin = require_role(["admin", "lead"])
+require_lead = require_admin  # Backward compatibility alias
+require_auditor = require_role(["auditor", "admin", "lead"])
+
+
+def get_authorized_bundle_ids(
+    current_user: User,
+    db: Session
+) -> Optional[List[str]]:
+    """
+    Returns list of authorized bundle IDs for the given user.
+    - Admin / Lead: Returns None (indicating full organization-wide access).
+    - Auditor: Returns list of bundle IDs owned by the user (or unassigned demo bundles).
+    """
+    user_role = (current_user.role or "auditor").lower().strip()
+    if user_role in ("admin", "lead"):
+        return None
+
+    bundles = db.query(AuditBundle).filter(
+        (AuditBundle.uploaded_by == current_user.user_id) | (AuditBundle.uploaded_by == None)
+    ).all()
+    return [str(b.bundle_id) for b in bundles]
 
 
 def verify_bundle_access(
@@ -114,7 +134,7 @@ def verify_bundle_access(
     Client/Bundle Data Isolation Guard:
     1. Verifies bundle existence (returns 404 if missing).
     2. Enforces ownership:
-       - Lead role can access all bundles.
+       - Admin role (and legacy Lead) can access all bundles org-wide.
        - Auditor role can ONLY access bundles uploaded by them (or unassigned demo bundles).
        - Denies access with HTTP 403 if bundle is owned by a different user.
     """
@@ -127,7 +147,7 @@ def verify_bundle_access(
         )
 
     user_role = (current_user.role or "auditor").lower().strip()
-    if user_role == "lead":
+    if user_role in ("admin", "lead"):
         return bundle
 
     # Auditor role check

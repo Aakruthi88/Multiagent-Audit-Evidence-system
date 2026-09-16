@@ -337,11 +337,18 @@ def search_node(state: BundleState) -> Dict[str, Any]:
     bundle_id = state.get("bundle_id")
     plan = state.get("retrieval_plan")
     user_query = state.get("user_query") or ""
+    authorized_bundle_ids = state.get("authorized_bundle_ids")
     start = time.time()
 
     if not bundle_id and user_query:
         from app.agents.intent_router_agent import _lookup_bundle_by_query
-        bundle_id = _lookup_bundle_by_query(user_query)
+        bundle_id = _lookup_bundle_by_query(user_query, allowed_bundle_ids=authorized_bundle_ids)
+
+    # If bundle_id was explicitly provided, verify authorization upfront
+    if bundle_id and authorized_bundle_ids is not None:
+        if str(bundle_id) not in set(authorized_bundle_ids):
+            logger.warning(f"[SearchAgent] Bundle '{bundle_id}' is not in user's authorized bundle list. Denying retrieval.")
+            bundle_id = None
 
     logger.info(f"[SearchAgent] Running dynamic evidence retrieval for bundle {bundle_id}")
 
@@ -361,30 +368,27 @@ def search_node(state: BundleState) -> Dict[str, Any]:
     try:
         evidence_table = _fetch_bundle_evidence(db, bundle_id, plan)
 
-        # Vector similarity search in ChromaDB
+        # Vector similarity search in ChromaDB (only when similarity or multi-vendor context is explicitly requested)
         vendor_matches = []
         vendor_name = evidence_table.get("vendor_name")
-        if vendor_name:
-            collection = _get_chroma()
-            if collection:
-                try:
-                    # Upsert vendor embedding for current bundle
-                    collection.upsert(
-                        documents=[vendor_name],
-                        ids=[bundle_id],
-                        metadatas=[{"bundle_id": bundle_id, "vendor_name": vendor_name}],
-                    )
-                    # Query similarity matches
+        wants_vendor_sim = any(k in (user_query or "").lower() for k in ["similar", "other vendor", "vendor match", "duplicate vendor", "fuzzy vendor"])
+
+        if vendor_name and wants_vendor_sim:
+            try:
+                collection = _get_chroma()
+                if collection:
                     results = collection.query(
                         query_texts=[vendor_name],
                         n_results=4,
                     )
                     if results and results.get("metadatas"):
+                        allowed_set = set(authorized_bundle_ids) if authorized_bundle_ids is not None else None
                         vendor_matches = [
-                            m for m in results["metadatas"][0] if m.get("bundle_id") != bundle_id
+                            m for m in results["metadatas"][0]
+                            if m.get("bundle_id") != bundle_id and (allowed_set is None or m.get("bundle_id") in allowed_set)
                         ]
-                except Exception as exc:
-                    logger.warning(f"[SearchAgent] ChromaDB query error: {exc}")
+            except Exception as exc:
+                logger.warning(f"[SearchAgent] ChromaDB query error: {exc}")
 
         latency = int((time.time() - start) * 1000)
         logger.info(f"[SearchAgent] Dynamic evidence retrieval complete in {latency}ms")

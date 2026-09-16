@@ -49,8 +49,14 @@ def log_agent_run(agent_name: str, fn):
         bundle_id = state.get("bundle_id")
         logger.info(f"[graph] Starting node '{agent_name}' for bundle '{bundle_id}'")
 
-        out = fn(state)
-        latency = int((time.time() - start) * 1000)
+        out = fn(state) or {}
+        latency_ms = int((time.time() - start) * 1000)
+        logger.info(f"⏱️  [AGENT TIMING] {agent_name}: {latency_ms}ms ({latency_ms / 1000:.2f}s)")
+
+        # Record agent timings dictionary in output state
+        existing_timings = dict(state.get("agent_timings") or {})
+        existing_timings[agent_name] = latency_ms
+        out["agent_timings"] = existing_timings
 
         db = SessionLocal()
         try:
@@ -59,9 +65,9 @@ def log_agent_run(agent_name: str, fn):
                     bundle_id=bundle_id,
                     agent_name=agent_name,
                     input_snapshot={"bundle_id": bundle_id, "action": state.get("action")},
-                    output_snapshot={k: v for k, v in (out or {}).items() if k not in ("extracted", "evidence_table")},
-                    latency_ms=latency,
-                    error_message=(out.get("errors")[0] if (out and out.get("errors")) else None),
+                    output_snapshot={k: v for k, v in out.items() if k not in ("extracted", "evidence_table", "agent_timings")},
+                    latency_ms=latency_ms,
+                    error_message=(out.get("errors")[0] if out.get("errors") else None),
                 )
             )
             db.commit()
@@ -269,7 +275,36 @@ class CheckpointedStateGraph:
                 thread_id = f"session_{uuid.uuid4()}"
             configurable["thread_id"] = str(thread_id)
             cfg["configurable"] = configurable
-        return self._inner.invoke(input, config=cfg, **kwargs)
+
+        pipeline_start = time.time()
+        final_state = self._inner.invoke(input, config=cfg, **kwargs)
+        total_time_ms = int((time.time() - pipeline_start) * 1000)
+
+        if isinstance(final_state, dict):
+            final_state["total_pipeline_time_ms"] = total_time_ms
+            timings = final_state.get("agent_timings") or {}
+            user_query = input.get("user_query") if isinstance(input, dict) else None
+            bundle_ref = final_state.get("bundle_id") or "N/A"
+            action_ref = final_state.get("action") or "query"
+
+            summary_box = [
+                "",
+                "=" * 70,
+                "⏱️  BACKEND QUERY & AGENT TIMING BREAKDOWN",
+                "=" * 70,
+                f"• Query / Action : {user_query or action_ref}",
+                f"• Target Bundle  : {bundle_ref}",
+                "-" * 70,
+            ]
+            for agent, t_ms in timings.items():
+                summary_box.append(f"  • {agent:<20} : {t_ms:>5} ms  ({t_ms / 1000:>5.2f}s)")
+            summary_box.append("-" * 70)
+            summary_box.append(f"🏁 TOTAL PIPELINE TIME  : {total_time_ms:>5} ms  ({total_time_ms / 1000:>5.2f}s)")
+            summary_box.append("=" * 70)
+            
+            logger.info("\n".join(summary_box))
+
+        return final_state
 
     def get_state(self, config: Dict[str, Any], **kwargs):
         return self._inner.get_state(config, **kwargs)

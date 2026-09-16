@@ -1,8 +1,13 @@
 import { apiClient } from './client';
 import { AuditBundle, DocumentItem, AgentLog, VerificationSummary, VerificationRun } from '../types';
-import { AuthUser, LoginCredentials, TokenResponse } from '../types/auth';
+import { AuthUser, LoginCredentials, SignupCredentials, UserListItem, TokenResponse } from '../types/auth';
 
 // ── Authentication API ─────────────────────────────────────────────────────────
+
+export const signupUser = async (credentials: SignupCredentials): Promise<AuthUser> => {
+  const response = await apiClient.post<AuthUser>('/auth/signup', credentials);
+  return response.data;
+};
 
 export const loginUser = async (credentials: LoginCredentials): Promise<TokenResponse> => {
   const response = await apiClient.post<TokenResponse>('/auth/login', credentials);
@@ -13,6 +18,12 @@ export const getCurrentUser = async (): Promise<AuthUser> => {
   const response = await apiClient.get<AuthUser>('/auth/me');
   return response.data;
 };
+
+export const getUsers = async (): Promise<UserListItem[]> => {
+  const response = await apiClient.get<UserListItem[]>('/auth/users');
+  return response.data;
+};
+
 
 // ── Bundles & Documents API ───────────────────────────────────────────────────
 

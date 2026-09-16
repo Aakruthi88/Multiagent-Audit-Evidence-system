@@ -27,10 +27,10 @@ import {
   StatusBadge,
   SeverityTag,
 } from "../theme";
-
-const API_BASE = "http://localhost:8000/api/v1";
+import { apiClient } from "../api/client";
 
 interface BundleFile {
+
   filename: string;
   doc_type: string;
   label: string;
@@ -1441,16 +1441,9 @@ export const AskQuery: React.FC = () => {
     try {
       const payload: any = { query: query.trim() };
       if (bundleId.trim()) payload.bundle_id = bundleId.trim();
-      const res = await fetch(`${API_BASE}/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Server error ${res.status}: ${errText}`);
-      }
-      const data = await res.json();
+      
+      const res = await apiClient.post("/run", payload);
+      const data = res.data;
       setResult(data);
 
       const backendSourceDocs =
@@ -1475,11 +1468,8 @@ export const AskQuery: React.FC = () => {
         setBundleFiles(formattedDocs);
       } else if (activeBundleId) {
         try {
-          const filesRes = await fetch(`${API_BASE}/bundles/${activeBundleId}/files`);
-          if (filesRes.ok) {
-            const filesData = await filesRes.json();
-            setBundleFiles(filesData.files || []);
-          }
+          const filesRes = await apiClient.get(`/bundles/${activeBundleId}/files`);
+          setBundleFiles(filesRes.data.files || []);
         } catch {
           setBundleFiles([]);
         }
@@ -1489,11 +1479,13 @@ export const AskQuery: React.FC = () => {
 
       setFilesExpanded(false);
     } catch (err: any) {
-      setError(err.message || "Unknown error occurred");
+      const detail = err.response?.data?.detail || err.message || "Unknown error occurred";
+      setError(detail);
     } finally {
       setLoading(false);
     }
   };
+
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {

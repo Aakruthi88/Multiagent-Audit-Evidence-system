@@ -1,0 +1,133 @@
+[
+  {
+    "index": 1,
+    "query": "What is the total of Invoice 200005?",
+    "latency_ms": 12332.268600002863,
+    "verdict": null,
+    "intent": "lookup",
+    "required_documents": [
+      "invoice"
+    ],
+    "answer": "The total amount for Invoice 200005 is ₹637200.00. The invoice was dated on 2026-07-19 and is due by 2026-08-18. The vendor name is oak plc traders. The invoice includes a subtotal of ₹540000.00 and tax of ₹97200.00, making the total amount ₹637200.00."
+  },
+  {
+    "index": 2,
+    "query": "Verify invoice 200005 against PO 100005 and GRN-2026-0005",
+    "latency_ms": 19055.97890005447,
+    "verdict": "clean",
+    "intent": "comparison",
+    "required_documents": [
+      "invoice",
+      "purchase_order",
+      "grn",
+      "bank_statement"
+    ],
+    "answer": "Invoice 200005 against PO 100005 and GRN-2026-0005 has been verified as clean. The following details confirm the match:\n\n- **Invoice Amount**: ₹637,200\n- **PO Amount**: ₹637,200\n- **GRN Amount**: ₹540,000\n\nAll relevant checks have passed, including:\n- Document Completeness (GRN)\n- PO ↔ GRN Amount Match (Pre-Tax)\n- PO ↔ GRN Quantity Match\n- Invoice ↔ GRN Amount Match\n\nThe vendor name is \"oak plc traders\". The quantities and items match exactly as per the PO and GRN. The invoice and GRN amounts match pre-tax totals. There are no discrepancies or exceptions found.\n\nThe bank statement shows a payment of ₹637,200 on 2026-07-26, referenced as NEFT-Ref6821782-Oak PLC Traders-INV200005, which matches the invoice number provided.\n\nNo additional failure reasons or discrepancies were found in the available evidence."
+  },
+  {
+    "index": 3,
+    "query": "Why was TXN-2026-895 flagged?",
+    "latency_ms": 19299.493999918923,
+    "verdict": "anomaly",
+    "intent": "investigation",
+    "required_documents": [
+      "invoice",
+      "purchase_order",
+      "grn",
+      "bank_statement"
+    ],
+    "answer": "TXN-2026-895 was flagged because of the following discrepancies and findings:\n\n- The invoice total ₹447,314.40 exceeds the purchase order total ₹414,180.00 by ₹33,134.40 (8.00%). This flags an overbill/underbill with no corresponding purchase order amendment on file.\n- The invoice subtotal ₹379,080.00 does not match the GRN total ₹351,000.00, indicating that the invoice is paying for unconfirmed goods.\n- The bank debit amount ₹414,180.00 does not equal the invoice total ₹447,314.40, indicating a partial payment or overpayment.\n\nAction required: Obtain an approved purchase order amendment or request a credit note from the vendor. Reconcile the GRN with the invoice before approving payment. Investigate the partial payment or overpayment with the treasury."
+  },
+  {
+    "index": 4,
+    "query": "Why was transaction TXN-2026-895 failed?",
+    "latency_ms": 21604.487899923697,
+    "verdict": "anomaly",
+    "intent": "investigation",
+    "required_documents": [
+      "invoice",
+      "purchase_order",
+      "grn",
+      "bank_statement"
+    ],
+    "answer": "Transaction TXN-2026-895 was failed due to the following discrepancies and findings:\n\n- The invoice total ₹447,314.40 exceeds the purchase order total ₹414,180.00 by ₹33,134.40 (8.00%). This discrepancy flags an overbill/underbill with no corresponding purchase order amendment on file.\n- The invoice subtotal ₹379,080.00 does not match the GRN total ₹351,000.00, indicating that the invoice billed for ₹379,080.00 but only ₹351,000.00 was received, which requires reconciliation with the GRN.\n- The bank debit amount ₹414,180.00 does not equal the invoice total ₹447,314.40, indicating a partial payment issue.\n\nAction required:\n- Obtain an approved purchase order amendment or request a credit note from the vendor to correct the overbill.\n- Reconcile the GRN with the invoice before approving payment.\n- Investigate the partial payment issue with the treasury to ensure the correct amount is disbursed."
+  },
+  {
+    "index": 5,
+    "query": "Was the invoice fully paid?",
+    "latency_ms": 68.07969999499619,
+    "verdict": null,
+    "intent": "payment_lookup",
+    "required_documents": [
+      "invoice",
+      "purchase_order",
+      "grn",
+      "bank_statement"
+    ],
+    "answer": "No matching vendor or document was found for your query. Known vendors currently in the system: oak plc traders, golla chauhan and guha, srinivas, srinivas enterprises, master plc enterprises, murthy oak and palla, dorarana, raikashyap industries, bala plc, chandra group, apex tech solutions pvt ltd, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex tech solutions pvt ltd. Please verify the vendor name or provide a specific PO / Invoice number."
+  },
+  {
+    "index": 6,
+    "query": "Show me all amount mismatches",
+    "latency_ms": 10807.578500011005,
+    "verdict": null,
+    "intent": "investigation",
+    "required_documents": [
+      "invoice",
+      "purchase_order",
+      "grn",
+      "bank_statement"
+    ],
+    "answer": "Found 2 bundle(s) with amount mismatches:\n- Transaction TXN-P4-TEST-B-9AC2F9: Invoice total exceeds PO total by ₹50,000.00 (overbill).; Invoice total exceeds PO total by 50,000\n- Transaction TXN-2026-895: Invoice total ₹447314.40 exceeds PO total ₹414180.00 by ₹33134.40 (8.00%).; Invoice billed ₹379080.00 but GRN only confirms ₹351000.00.; Payment of ₹414180.00 does not equal invoice total ₹447314.40.; Invoice total ₹447314.40 vs PO total ₹414180.00 — variance ₹33134.40 (8.00%). This flags an overbill/underbill with no corresponding PO amendment on file.; Invoice subtotal ₹379080.00 ≠ GRN total ₹351000.00 — paying for unconfirmed goods; Bank debit ₹414180.00 ≠ Invoice total ₹447314.40"
+  },
+  {
+    "index": 7,
+    "query": "Does the invoice match the GRN?",
+    "latency_ms": 119.90869999863207,
+    "verdict": null,
+    "intent": "comparison",
+    "required_documents": [
+      "invoice",
+      "purchase_order",
+      "grn",
+      "bank_statement"
+    ],
+    "answer": "No matching vendor or document was found for your query. Known vendors currently in the system: oak plc traders, golla chauhan and guha, srinivas, srinivas enterprises, master plc enterprises, murthy oak and palla, dorarana, raikashyap industries, bala plc, chandra group, apex tech solutions pvt ltd, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex solutions, beta logistics, apex tech solutions pvt ltd. Please verify the vendor name or provide a specific PO / Invoice number."
+  },
+  {
+    "index": 8,
+    "query": "Generate an audit report for invoice 200005",
+    "latency_ms": 21056.541300029494,
+    "verdict": "clean",
+    "intent": "full_audit",
+    "required_documents": [
+      "invoice",
+      "purchase_order",
+      "grn",
+      "bank_statement"
+    ],
+    "answer": "clean"
+  },
+  {
+    "index": 9,
+    "query": "What is the total of Invoice 200006?",
+    "latency_ms": 6862.60360002052,
+    "verdict": null,
+    "intent": "lookup",
+    "required_documents": [
+      "invoice"
+    ],
+    "answer": "The total amount for Invoice 200006 is ₹447314.4."
+  },
+  {
+    "index": 10,
+    "query": "What is the status of Invoice INV-999999?",
+    "latency_ms": 111.36660003103316,
+    "verdict": null,
+    "intent": "lookup",
+    "required_documents": [
+      "invoice"
+    ],
+    "answer": "Found 50 audit bundle(s) in the system (24 flagged for audit review)."
+  }
+]

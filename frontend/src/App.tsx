@@ -2,16 +2,21 @@ import React, { useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { Navbar, TabKey } from "./components/Navbar";
 import { Login } from "./pages/Login";
+import { Signup } from "./pages/Signup";
 import { Home } from "./pages/Home";
 import { Dashboard } from "./pages/Dashboard";
 import { Bundles } from "./pages/Bundles";
 import { BundleUpload } from "./pages/BundleUpload";
 import { BundleDetail } from "./pages/BundleDetail";
 import { AskQuery } from "./pages/AskQuery";
+import { UsersManagement } from "./pages/UsersManagement";
 import { Backdrop, FontImport, sans, C } from "./theme";
 
 const AppContent: React.FC = () => {
   const { isAuthenticated, isLoading } = useAuth();
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+
+  const [signupSuccessNotice, setSignupSuccessNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
   const [selectedBundleId, setSelectedBundleId] = useState<string | undefined>(undefined);
 
@@ -23,6 +28,11 @@ const AppContent: React.FC = () => {
   const handleSelectBundle = (bundleId: string) => {
     setSelectedBundleId(bundleId);
     setActiveTab("detail");
+  };
+
+  const handleSignupSuccess = (createdEmail: string) => {
+    setSignupSuccessNotice(`Account created for ${createdEmail}! Please sign in with your password.`);
+    setAuthMode("login");
   };
 
   // Loading spinner during initial token verification
@@ -56,11 +66,28 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // Route Protection: If not authenticated, render Login page only
+  // Route Protection: If not authenticated, render Login or Signup page only
   if (!isAuthenticated) {
     return (
       <div style={{ maxWidth: 1240, margin: "0 auto" }}>
-        <Login onLoginSuccess={() => setActiveTab("dashboard")} />
+        {authMode === "signup" ? (
+          <Signup
+            onSignupSuccess={handleSignupSuccess}
+            onNavigateToLogin={() => {
+              setSignupSuccessNotice(null);
+              setAuthMode("login");
+            }}
+          />
+        ) : (
+          <Login
+            onLoginSuccess={() => setActiveTab("dashboard")}
+            onNavigateToSignup={() => {
+              setSignupSuccessNotice(null);
+              setAuthMode("signup");
+            }}
+            successNotice={signupSuccessNotice}
+          />
+        )}
       </div>
     );
   }
@@ -99,6 +126,10 @@ const AppContent: React.FC = () => {
 
         {activeTab === "ask" && (
           <AskQuery />
+        )}
+
+        {activeTab === "users" && (
+          <UsersManagement />
         )}
 
         {activeTab === "detail" && selectedBundleId && (

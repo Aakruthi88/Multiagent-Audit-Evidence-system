@@ -118,11 +118,11 @@ def list_bundles(
     """
     GET /api/v1/bundles - List audit bundles.
     Client Isolation: Auditors only see bundles they uploaded (or unassigned demo bundles).
-    Lead role sees all bundles.
+    Admin role sees all bundles org-wide.
     """
     q = db.query(AuditBundle)
     user_role = (current_user.role or "auditor").lower().strip()
-    if user_role != "lead":
+    if user_role not in ("admin", "lead"):
         q = q.filter(
             (AuditBundle.uploaded_by == current_user.user_id) | (AuditBundle.uploaded_by == None)
         )
@@ -139,14 +139,15 @@ def get_business_impact_metrics(
     """
     GET /api/v1/bundles/metrics/impact
     Calculates Business Impact & ROI metrics based strictly on REAL database records.
-    Scopes calculations by user role (Lead: all bundles; Auditor: user's bundles + demo).
+    Scopes calculations by user role (Admin: all bundles; Auditor: user's bundles + demo).
     """
     user_role = (current_user.role or "auditor").lower().strip()
     bundle_q = db.query(AuditBundle)
-    if user_role != "lead":
+    if user_role not in ("admin", "lead"):
         bundle_q = bundle_q.filter(
             (AuditBundle.uploaded_by == current_user.user_id) | (AuditBundle.uploaded_by == None)
         )
+
     
     bundles = bundle_q.all()
     bundle_ids = [b.bundle_id for b in bundles]

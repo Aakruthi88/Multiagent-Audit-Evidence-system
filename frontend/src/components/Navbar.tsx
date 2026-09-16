@@ -8,11 +8,12 @@ import {
   Home,
   FileText,
   LogOut,
+  Users,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { C, sans, mono } from "../theme";
 
-export type TabKey = "home" | "dashboard" | "upload" | "bundles" | "ask" | "detail";
+export type TabKey = "home" | "dashboard" | "upload" | "bundles" | "ask" | "detail" | "users";
 
 interface NavbarProps {
   activeTab: TabKey;
@@ -23,6 +24,8 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selectedBundleId }) => {
   const { user, logout } = useAuth();
 
+  const isAdmin = (user?.role || "").toLowerCase() === "admin" || (user?.role || "").toLowerCase() === "lead";
+
   const navItems: { key: TabKey; label: string; icon: any }[] = [
     { key: "home", label: "Home", icon: Home },
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -30,6 +33,11 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
     { key: "bundles", label: "Bundles", icon: Layers3 },
     { key: "ask", label: "Ask documents", icon: MessageSquareText },
   ];
+
+  if (isAdmin) {
+    navItems.push({ key: "users", label: "Auditors", icon: Users });
+  }
+
 
   // Derive initials from user name or email
   const getInitials = () => {
@@ -44,9 +52,8 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
     return user.email.substring(0, 2).toUpperCase();
   };
 
-  const isLead = user?.role === "lead";
-
   return (
+
     <div
       style={{
         display: "flex",
@@ -167,7 +174,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
               width: 30,
               height: 30,
               borderRadius: "50%",
-              background: isLead
+              background: isAdmin
                 ? `linear-gradient(135deg, ${C.success}, #18A979)`
                 : `linear-gradient(135deg, ${C.primary}, ${C.accent})`,
               color: "#fff",
@@ -178,7 +185,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
-              boxShadow: isLead
+              boxShadow: isAdmin
                 ? "0 3px 8px rgba(15,122,86,0.28)"
                 : "0 3px 8px rgba(91,99,232,0.28)",
             }}
@@ -200,7 +207,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
               }}
             >
               <span style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {user?.name || "Auditor"}
+                {user?.name || (isAdmin ? "Admin" : "Auditor")}
               </span>
               <span
                 style={{
@@ -210,12 +217,12 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
                   borderRadius: 6,
                   textTransform: "uppercase",
                   letterSpacing: "0.04em",
-                  background: isLead ? C.successBg : "rgba(91,99,232,0.12)",
-                  color: isLead ? C.success : C.accent,
-                  border: `1px solid ${isLead ? C.successBorder : "rgba(91,99,232,0.25)"}`,
+                  background: isAdmin ? C.successBg : "rgba(91,99,232,0.12)",
+                  color: isAdmin ? C.success : C.accent,
+                  border: `1px solid ${isAdmin ? C.successBorder : "rgba(91,99,232,0.25)"}`,
                 }}
               >
-                {isLead ? "Lead" : "Auditor"}
+                {isAdmin ? "Admin" : "Auditor"}
               </span>
             </div>
             <span
@@ -230,9 +237,10 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
               }}
               title={user?.email}
             >
-              {user?.email || "auditor@audit.local"}
+              {user?.email || (isAdmin ? "admin@audit.local" : "auditor@audit.local")}
             </span>
           </div>
+
 
           {/* Logout Button */}
           <button

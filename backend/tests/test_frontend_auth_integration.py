@@ -2,7 +2,7 @@
 Frontend Auth Integration Test Suite - backend/tests/test_frontend_auth_integration.py
 --------------------------------------------------------------------------------------
 Validates the backend contract used by the frontend authentication layer:
-- /api/v1/auth/login with all demo accounts (Auditor, Lead Auditor, Second Auditor)
+- /api/v1/auth/login with all demo accounts (Auditor, Admin, Second Auditor)
 - Invalid credential rejection (401)
 - /api/v1/auth/me user profile inspection
 - Bearer token authentication lifecycle
@@ -10,10 +10,11 @@ Validates the backend contract used by the frontend authentication layer:
 """
 
 import pytest
-from fastapi.testclient import TestClient
+import httpx
+from unittest.mock import patch
 from app.main import app
 from app.db.session import SessionLocal
-from app.models.models import User, AuditBundle
+from app.models.models import AuditBundle
 from app.api.v1.auth import init_demo_users
 
 
@@ -28,13 +29,21 @@ def setup_demo_accounts():
 
 
 @pytest.fixture
-def client():
-    return TestClient(app)
+def anyio_backend():
+    return "asyncio"
 
 
-def test_login_auditor_success(client):
+@pytest.fixture
+async def async_client():
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+
+
+@pytest.mark.anyio
+async def test_login_auditor_success(async_client):
     """Test 1: Auditor demo login returns 200 with JWT and auditor role."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/auth/login",
         json={"email": "auditor@audit.local", "password": "auditor123"},
     )
@@ -47,23 +56,25 @@ def test_login_auditor_success(client):
     assert data["user"]["name"] == "Demo Auditor"
 
 
-def test_login_lead_auditor_success(client):
-    """Test 2: Lead Auditor demo login returns 200 with JWT and lead role."""
-    response = client.post(
+@pytest.mark.anyio
+async def test_login_admin_success(async_client):
+    """Test 2: Admin demo login returns 200 with JWT and admin role."""
+    response = await async_client.post(
         "/api/v1/auth/login",
-        json={"email": "lead@audit.local", "password": "lead123"},
+        json={"email": "admin@audit.local", "password": "admin123"},
     )
     assert response.status_code == 200
     data = response.json()
     assert "access_token" in data
-    assert data["user"]["email"] == "lead@audit.local"
-    assert data["user"]["role"] == "lead"
-    assert data["user"]["name"] == "Demo Lead Auditor"
+    assert data["user"]["email"] == "admin@audit.local"
+    assert data["user"]["role"] == "admin"
+    assert data["user"]["name"] == "Audit Administrator"
 
 
-def test_login_second_auditor_success(client):
+@pytest.mark.anyio
+async def test_login_second_auditor_success(async_client):
     """Test 3: Second Auditor demo login returns 200 with separate identity."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/auth/login",
         json={"email": "auditor2@audit.local", "password": "auditor123"},
     )
@@ -75,9 +86,10 @@ def test_login_second_auditor_success(client):
     assert data["user"]["name"] == "Second Auditor"
 
 
-def test_login_invalid_password_fails(client):
+@pytest.mark.anyio
+async def test_login_invalid_password_fails(async_client):
     """Test 4: Invalid password returns 401 with appropriate error detail."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/auth/login",
         json={"email": "auditor@audit.local", "password": "wrongpassword999"},
     )
@@ -87,9 +99,10 @@ def test_login_invalid_password_fails(client):
     assert "Incorrect email or password" in data["detail"]
 
 
-def test_login_nonexistent_email_fails(client):
+@pytest.mark.anyio
+async def test_login_nonexistent_email_fails(async_client):
     """Test 5: Nonexistent user email returns 401."""
-    response = client.post(
+    response = await async_client.post(
         "/api/v1/auth/login",
         json={"email": "ghost@audit.local", "password": "anypassword"},
     )
@@ -97,48 +110,48 @@ def test_login_nonexistent_email_fails(client):
     assert "Incorrect email or password" in response.json()["detail"]
 
 
-def test_auth_me_with_valid_token(client):
+@pytest.mark.anyio
+async def test_auth_me_with_valid_token(async_client):
     """Test 6: /auth/me returns current user profile when valid token provided."""
-    # Login as lead
-    login_res = client.post(
+    login_res = await async_client.post(
         "/api/v1/auth/login",
-        json={"email": "lead@audit.local", "password": "lead123"},
+        json={"email": "admin@audit.local", "password": "admin123"},
     )
     token = login_res.json()["access_token"]
 
     # Call /auth/me
-    me_res = client.get(
+    me_res = await async_client.get(
         "/api/v1/auth/me",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert me_res.status_code == 200
     profile = me_res.json()
-    assert profile["email"] == "lead@audit.local"
-    assert profile["role"] == "lead"
-    assert profile["name"] == "Demo Lead Auditor"
+    assert profile["email"] == "admin@audit.local"
+    assert profile["role"] == "admin"
+    assert profile["name"] == "Audit Administrator"
 
 
-def test_auth_me_without_token_fails(client):
+@pytest.mark.anyio
+async def test_auth_me_without_token_fails(async_client):
     """Test 7: /auth/me without token returns 401 Unauthorized."""
-    response = client.get("/api/v1/auth/me")
+    response = await async_client.get("/api/v1/auth/me")
     assert response.status_code == 401
 
 
-def test_auth_me_with_invalid_token_fails(client):
+@pytest.mark.anyio
+async def test_auth_me_with_invalid_token_fails(async_client):
     """Test 8: /auth/me with bogus or malformed token returns 401."""
-    response = client.get(
+    response = await async_client.get(
         "/api/v1/auth/me",
         headers={"Authorization": "Bearer invalid.jwt.token.string"},
     )
     assert response.status_code == 401
 
 
-from unittest.mock import patch
-
-def test_bundle_creation_and_ownership_binding(client):
+@pytest.mark.anyio
+async def test_bundle_creation_and_ownership_binding(async_client):
     """Test 9: Creating bundle with auth token sets uploaded_by to authenticated user."""
-    # Login as auditor2
-    login_res = client.post(
+    login_res = await async_client.post(
         "/api/v1/auth/login",
         json={"email": "auditor2@audit.local", "password": "auditor123"},
     )
@@ -156,10 +169,9 @@ def test_bundle_creation_and_ownership_binding(client):
     txn_ref = f"TXN-TEST-AUTH-{uuid.uuid4().hex[:8].upper()}"
     data = {"txn_reference": txn_ref}
 
-    # Mock background processing task to isolate test to bundle creation & ownership binding
     with patch("app.api.v1.bundles.process_bundle_task"):
-        bundle_res = client.post(
-            "/api/v1/bundles/",
+        bundle_res = await async_client.post(
+            "/api/v1/bundles",
             data=data,
             files=files,
             headers={"Authorization": f"Bearer {token}"},
@@ -167,7 +179,6 @@ def test_bundle_creation_and_ownership_binding(client):
     assert bundle_res.status_code == 202
     bundle_id = bundle_res.json()["bundle_id"]
 
-    # Verify bundle in DB has uploaded_by == auditor2's user_id
     db = SessionLocal()
     try:
         bundle = db.query(AuditBundle).filter(AuditBundle.bundle_id == bundle_id).first()
@@ -175,5 +186,3 @@ def test_bundle_creation_and_ownership_binding(client):
         assert str(bundle.uploaded_by) == str(user_id)
     finally:
         db.close()
-
-

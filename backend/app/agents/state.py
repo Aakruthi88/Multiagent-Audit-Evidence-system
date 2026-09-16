@@ -4,9 +4,12 @@ import operator
 
 
 class BundleState(TypedDict):
-    # ── Core identifiers ────────────────────────────────────────────────────────
+    # ── Core identifiers & Authorization ─────────────────────────────────────────
     bundle_id: Optional[str]
     user_query: Optional[str]            # Natural language prompt
+    user_id: Optional[str]               # Authenticated user ID
+    user_role: Optional[str]             # 'admin' | 'auditor'
+    authorized_bundle_ids: Optional[List[str]]  # None = Admin (all bundles), List[str] = Auditor (scoped)
 
     # ── Intent routing ───────────────────────────────────────────────────────────
     action: Optional[str]                # Determined by IntentRouterAgent or set directly by API:
@@ -42,3 +45,7 @@ class BundleState(TypedDict):
 
     # ── Error accumulation ───────────────────────────────────────────────────────
     errors: List[str]
+
+    # ── Timing breakdown ─────────────────────────────────────────────────────────
+    agent_timings: Optional[Dict[str, int]]             # Execution time per agent in milliseconds
+    total_pipeline_time_ms: Optional[int]              # Overall end-to-end pipeline latency in ms

@@ -4,7 +4,7 @@ Phase 4 Test Suite: Deterministic Audit Workpaper Export + Business Impact / ROI
 Verifies:
 1. PDF export succeeds for authorized bundle with valid PDF structure (%PDF-).
 2. Auditor cannot export another auditor's bundle (403 Forbidden).
-3. Lead Auditor can export any auditor's bundle (200 OK).
+3. Admin / Lead Auditor can export any auditor's bundle (200 OK).
 4. PDF contains correct bundle information and transaction reference.
 5. PDF contains deterministic verification check results and PASS/FAIL counts.
 6. PDF contains exceptions and discrepancies with severity.
@@ -22,7 +22,7 @@ from datetime import datetime, date
 from decimal import Decimal
 import pypdfium2 as pdfium
 import pytest
-from fastapi.testclient import TestClient
+import httpx
 
 from app.core.security import create_access_token, get_password_hash
 from app.db.session import SessionLocal
@@ -46,13 +46,20 @@ from app.services.report_export_service import report_export_service
 
 
 @pytest.fixture(scope="module")
-def client():
-    return TestClient(app)
+def anyio_backend():
+    return "asyncio"
 
 
 @pytest.fixture(scope="module")
-def setup_users(client):
-    """Seed test users: Auditor 1, Auditor 2, and Lead Auditor."""
+async def client():
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as async_client:
+        yield async_client
+
+
+@pytest.fixture(scope="module")
+def setup_users():
+    """Seed test users: Auditor 1, Auditor 2, and Admin."""
     db = SessionLocal()
     try:
         # User 1: Auditor A
@@ -77,14 +84,14 @@ def setup_users(client):
             )
             db.add(u2)
 
-        # User 3: Lead Auditor
+        # User 3: Admin Carol
         u3 = db.query(User).filter(User.email == "lead_p4@deloitte.com").first()
         if not u3:
             u3 = User(
-                name="Lead Auditor Carol",
+                name="Admin Carol",
                 email="lead_p4@deloitte.com",
                 hashed_password=get_password_hash("LeadSecret123!"),
-                role="lead"
+                role="admin"
             )
             db.add(u3)
 
@@ -371,13 +378,14 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
 
 # ── Test 1: PDF Export Endpoint for Authorized Bundle ──────────────────────────
 
-def test_export_workpaper_success_authorized(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_export_workpaper_success_authorized(client, setup_users, seed_test_bundles):
     """Auditor A exports their own bundle A -> HTTP 200 with valid application/pdf."""
     bundle_id = seed_test_bundles["bundle_a_id"]
     token = setup_users["auditor_a"]
 
     headers = {"Authorization": f"Bearer {token}"}
-    resp = client.get(f"/api/v1/bundles/{bundle_id}/export-workpaper", headers=headers)
+    resp = await client.get(f"/api/v1/bundles/{bundle_id}/export-workpaper", headers=headers)
 
     assert resp.status_code == 200
     assert "application/pdf" in resp.headers.get("content-type", "")
@@ -390,27 +398,29 @@ def test_export_workpaper_success_authorized(client, setup_users, seed_test_bund
 
 # ── Test 2: RBAC Isolation - Unauthorized Auditor Access Denied ────────────────
 
-def test_export_workpaper_unauthorized_auditor_denied(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_export_workpaper_unauthorized_auditor_denied(client, setup_users, seed_test_bundles):
     """Auditor A attempts to export Auditor B's bundle -> HTTP 403 Forbidden."""
     bundle_b_id = seed_test_bundles["bundle_b_id"]
     token_a = setup_users["auditor_a"]
 
     headers = {"Authorization": f"Bearer {token_a}"}
-    resp = client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers=headers)
+    resp = await client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers=headers)
 
     assert resp.status_code == 403
     assert "not authorized" in resp.json().get("detail", "").lower()
 
 
-# ── Test 3: Lead Auditor Supervisory Access ────────────────────────────────────
+# ── Test 3: Admin / Lead Auditor Supervisory Access ────────────────────────────
 
-def test_export_workpaper_lead_auditor_access(client, setup_users, seed_test_bundles):
-    """Lead Auditor can export any bundle (including Auditor B's bundle) -> HTTP 200 OK."""
+@pytest.mark.anyio
+async def test_export_workpaper_lead_auditor_access(client, setup_users, seed_test_bundles):
+    """Admin / Lead Auditor can export any bundle (including Auditor B's bundle) -> HTTP 200 OK."""
     bundle_b_id = seed_test_bundles["bundle_b_id"]
     token_lead = setup_users["lead"]
 
     headers = {"Authorization": f"Bearer {token_lead}"}
-    resp = client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers=headers)
+    resp = await client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers=headers)
 
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF-")
@@ -418,12 +428,13 @@ def test_export_workpaper_lead_auditor_access(client, setup_users, seed_test_bun
 
 # ── Test 4: PDF Contains Correct Bundle Info & Authoritative Values ─────────────
 
-def test_pdf_contains_correct_bundle_and_financials(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_pdf_contains_correct_bundle_and_financials(client, setup_users, seed_test_bundles):
     """Verify generated PDF contains transaction ref, vendor, and exact financial values."""
     bundle_id = seed_test_bundles["bundle_a_id"]
     token = setup_users["auditor_a"]
 
-    resp = client.get(f"/api/v1/bundles/{bundle_id}/export-workpaper", headers={"Authorization": f"Bearer {token}"})
+    resp = await client.get(f"/api/v1/bundles/{bundle_id}/export-workpaper", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
 
     pdf_text = _extract_pdf_text(resp.content)
@@ -443,12 +454,13 @@ def test_pdf_contains_correct_bundle_and_financials(client, setup_users, seed_te
 
 # ── Test 5: PDF Contains Deterministic Check Results and Verification Matrix ───
 
-def test_pdf_contains_deterministic_checks(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_pdf_contains_deterministic_checks(client, setup_users, seed_test_bundles):
     """Verify deterministic check matrix is present with PASS badges and explanations."""
     bundle_id = seed_test_bundles["bundle_a_id"]
     token = setup_users["auditor_a"]
 
-    resp = client.get(f"/api/v1/bundles/{bundle_id}/export-workpaper", headers={"Authorization": f"Bearer {token}"})
+    resp = await client.get(f"/api/v1/bundles/{bundle_id}/export-workpaper", headers={"Authorization": f"Bearer {token}"})
     pdf_text = _extract_pdf_text(resp.content)
 
     assert "DETERMINISTIC VERIFICATION MATRIX" in pdf_text
@@ -460,12 +472,13 @@ def test_pdf_contains_deterministic_checks(client, setup_users, seed_test_bundle
 
 # ── Test 6: PDF Contains Exceptions & Discrepancies When Present ───────────────
 
-def test_pdf_contains_exceptions_and_discrepancies(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_pdf_contains_exceptions_and_discrepancies(client, setup_users, seed_test_bundles):
     """Verify bundle B PDF contains critical discrepancy findings."""
     bundle_b_id = seed_test_bundles["bundle_b_id"]
     token_lead = setup_users["lead"]
 
-    resp = client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers={"Authorization": f"Bearer {token_lead}"})
+    resp = await client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers={"Authorization": f"Bearer {token_lead}"})
     assert resp.status_code == 200
 
     pdf_text = _extract_pdf_text(resp.content)
@@ -479,12 +492,13 @@ def test_pdf_contains_exceptions_and_discrepancies(client, setup_users, seed_tes
 
 # ── Test 7: Source Document Hash & Strict Cross-Bundle Data Isolation ───────────
 
-def test_pdf_strict_cross_bundle_isolation(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_pdf_strict_cross_bundle_isolation(client, setup_users, seed_test_bundles):
     """Bundle A PDF must contain only Bundle A documents and NEVER leak Bundle B data."""
     bundle_a_id = seed_test_bundles["bundle_a_id"]
     token_a = setup_users["auditor_a"]
 
-    resp_a = client.get(f"/api/v1/bundles/{bundle_a_id}/export-workpaper", headers={"Authorization": f"Bearer {token_a}"})
+    resp_a = await client.get(f"/api/v1/bundles/{bundle_a_id}/export-workpaper", headers={"Authorization": f"Bearer {token_a}"})
     pdf_text_a = _extract_pdf_text(resp_a.content)
 
     # Must contain Bundle A hashes and refs
@@ -499,12 +513,13 @@ def test_pdf_strict_cross_bundle_isolation(client, setup_users, seed_test_bundle
 
 # ── Test 8: AI Summary Clean Separation & Disclaimer ───────────────────────────
 
-def test_pdf_ai_summary_separation_and_disclaimer(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_pdf_ai_summary_separation_and_disclaimer(client, setup_users, seed_test_bundles):
     """Verify AI executive summary is rendered under dedicated section with audit disclaimer."""
     bundle_a_id = seed_test_bundles["bundle_a_id"]
     token_a = setup_users["auditor_a"]
 
-    resp_a = client.get(f"/api/v1/bundles/{bundle_a_id}/export-workpaper", headers={"Authorization": f"Bearer {token_a}"})
+    resp_a = await client.get(f"/api/v1/bundles/{bundle_a_id}/export-workpaper", headers={"Authorization": f"Bearer {token_a}"})
     pdf_text_a = _extract_pdf_text(resp_a.content)
 
     assert "AI-GENERATED EXPLANATION" in pdf_text_a
@@ -515,12 +530,13 @@ def test_pdf_ai_summary_separation_and_disclaimer(client, setup_users, seed_test
 
 # ── Test 9: AI Summary Omitted When Absent in DB ───────────────────────────────
 
-def test_pdf_omits_ai_section_when_no_ai_summary(client, setup_users, seed_test_bundles):
+@pytest.mark.anyio
+async def test_pdf_omits_ai_section_when_no_ai_summary(client, setup_users, seed_test_bundles):
     """Bundle B has no AI summary in DB -> AI section is cleanly omitted."""
     bundle_b_id = seed_test_bundles["bundle_b_id"]
     token_lead = setup_users["lead"]
 
-    resp_b = client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers={"Authorization": f"Bearer {token_lead}"})
+    resp_b = await client.get(f"/api/v1/bundles/{bundle_b_id}/export-workpaper", headers={"Authorization": f"Bearer {token_lead}"})
     pdf_text_b = _extract_pdf_text(resp_b.content)
 
     assert "H. AI-GENERATED EXPLANATION" not in pdf_text_b
@@ -544,12 +560,13 @@ def test_report_export_service_direct_unit(seed_test_bundles):
 
 # ── Test 11: Business Impact & ROI Metrics API Derived from Real DB Data ───────
 
-def test_business_impact_metrics_endpoint(client, setup_users):
+@pytest.mark.anyio
+async def test_business_impact_metrics_endpoint(client, setup_users):
     """Verify /api/v1/bundles/metrics/impact calculates real metrics from DB."""
     token_lead = setup_users["lead"]
     headers = {"Authorization": f"Bearer {token_lead}"}
 
-    resp = client.get("/api/v1/bundles/metrics/impact", headers=headers)
+    resp = await client.get("/api/v1/bundles/metrics/impact", headers=headers)
     assert resp.status_code == 200
     data = resp.json()
 
@@ -570,10 +587,11 @@ def test_business_impact_metrics_endpoint(client, setup_users):
 
 # ── Test 12: Non-Existent Bundle Returns 404 ───────────────────────────────────
 
-def test_export_workpaper_nonexistent_bundle_404(client, setup_users):
+@pytest.mark.anyio
+async def test_export_workpaper_nonexistent_bundle_404(client, setup_users):
     """Requesting export for a nonexistent bundle returns HTTP 404."""
     fake_id = str(uuid.uuid4())
     token_lead = setup_users["lead"]
 
-    resp = client.get(f"/api/v1/bundles/{fake_id}/export-workpaper", headers={"Authorization": f"Bearer {token_lead}"})
+    resp = await client.get(f"/api/v1/bundles/{fake_id}/export-workpaper", headers={"Authorization": f"Bearer {token_lead}"})
     assert resp.status_code == 404

@@ -641,25 +641,34 @@ MultiAgentEvidencesystem/
 
 ---
 
-## 11. Security, Compliance & Isolation Architecture (Deloitte Rubric)
+## 11. Security, Compliance & Isolation Architecture (2-Role Enterprise RBAC)
 
 ### 11.1 Authentication & Credential Protection
 - **JWT Tokens**: Stateless authentication with `HS256`, 32+ byte cryptographic secret key, and configurable expiration.
 - **Bcrypt Hashing**: User passwords hashed with bcrypt salt generation (direct `bcrypt` library).
-- **Demo Accounts**: Auto-provisioned demo users on application bootstrap:
-  - `auditor@audit.local` (Password: `auditor123`) — Role: `auditor`
-  - `lead@audit.local` (Password: `lead123`) — Role: `lead`
-  - `auditor2@audit.local` (Password: `auditor123`) — Role: `auditor`
+- **Clean Authentication UX**: Production-grade login and registration interfaces with no exposed credentials or client autofill shortcuts.
+- **Self-Service Auditor Registration (`POST /api/v1/auth/signup`)**:
+  - Validates full name, email format, minimum 6-character password, and password confirmation.
+  - Rejects duplicate email registrations (`HTTP 400 Bad Request`).
+  - Strict server-side role binding: all newly registered accounts are provisioned exclusively with `role = "auditor"`. Client-supplied role overrides are strictly rejected.
+- **Provisioned Accounts**:
+  - `admin@audit.local` (Role: `admin`) — Organization-wide supervisory access & user directory
+  - `auditor@audit.local` (Role: `auditor`) — Engagement-scoped auditor account
+  - `auditor2@audit.local` (Role: `auditor`) — Second auditor account for cross-tenant isolation testing
 
 ### 11.2 Server-Side Role-Based Access Control (RBAC)
-- Role enforcement handled via FastAPI dependency injection guards (`require_role`, `require_auditor`, `require_lead`).
-- Auditor permissions are strictly scoped to the user's assigned audit bundles.
-- Lead Auditor permissions provide organization-wide supervisory access across all audit engagements.
+- **Two Roles**:
+  - **Admin**: Full visibility across all audit engagements, bundles, users (`GET /api/v1/auth/users`), and portfolio analytics.
+  - **Auditor**: Restricted strictly to their own assigned audit engagements. Can upload documents, create bundles, and search/verify/export only within their authorized scope.
+- Role enforcement handled via FastAPI dependency injection guards (`require_role`, `require_admin`, `require_auditor`).
 
-### 11.3 Multi-Tenant / Engagement Data Isolation
-- Audit bundles are bound to user IDs via `uploaded_by`.
-- Access guard `verify_bundle_access` validates ownership on every bundle query, file retrieval, or LangGraph execution.
-- Cross-tenant queries by non-lead auditors are blocked with `HTTP 403 Forbidden`.
+### 11.3 Pre-Retrieval Authorization Scoping & Multi-Tenant Data Isolation
+- **Pre-Retrieval Scoping Rule**:
+  - Authorization claims (`user_id`, `role`, `authorized_bundle_ids`) are validated **before** SQL queries or ChromaDB vector similarity retrievals execute.
+  - For Auditor accounts, `get_authorized_bundle_ids(user, db)` extracts authorized bundle IDs and injects them into the LangGraph state.
+  - `entity_resolver.py` and `search_agent.py` bound entity matching and semantic search exclusively to the user's authorized bundle set.
+  - Cross-tenant queries (e.g., Auditor A asking for Auditor B's invoice) fail closed (`resolved: False`, `bundle_id: None`), preventing data leakage.
+- Direct endpoint access guards (`verify_bundle_access`) prevent unauthorized bundle inspection, document downloading, verification execution, or PDF workpaper export (`HTTP 403 Forbidden`).
 
 ### 11.4 Document Storage & Path Traversal Mitigation
 - Storage service resolves all paths against `STORAGE_DIR / "bundles" / str(bundle_id)`.

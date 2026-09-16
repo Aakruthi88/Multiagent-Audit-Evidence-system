@@ -7,19 +7,22 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
-  UserCheck,
-  Shield,
-  KeyRound,
-  CheckCircle2,
+  UserPlus,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
-import { C, glass, sans, mono } from "../theme";
+import { C, glass, sans } from "../theme";
 
 interface LoginProps {
   onLoginSuccess?: () => void;
+  onNavigateToSignup?: () => void;
+  successNotice?: string | null;
 }
 
-export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
+export const Login: React.FC<LoginProps> = ({
+  onLoginSuccess,
+  onNavigateToSignup,
+  successNotice,
+}) => {
   const { login, error, clearError } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -53,13 +56,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  const handleSelectDemoAccount = (demoEmail: string, demoPass: string) => {
-    setEmail(demoEmail);
-    setPassword(demoPass);
-    setFormError(null);
-    clearError();
-  };
-
   const activeError = formError || error;
 
   return (
@@ -77,7 +73,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       <div
         style={{
           width: "100%",
-          maxWidth: 480,
+          maxWidth: 440,
           ...glass({
             padding: "36px 32px 32px",
             boxShadow: "0 20px 50px rgba(40,48,107,0.18), inset 0 1px 0 rgba(255,255,255,0.8)",
@@ -117,6 +113,27 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           </p>
         </div>
 
+        {/* Success Notice if coming from Signup */}
+        {successNotice && !activeError && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: C.successBg,
+              border: `1px solid ${C.successBorder}`,
+              marginBottom: 20,
+            }}
+          >
+            <ShieldCheck size={18} color={C.success} style={{ flexShrink: 0, marginTop: 1 }} />
+            <div style={{ fontSize: 13, color: C.success, fontWeight: 600, lineHeight: 1.4 }}>
+              {successNotice}
+            </div>
+          </div>
+        )}
+
         {/* Error Alert */}
         {activeError && (
           <div
@@ -129,7 +146,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               background: C.dangerBg,
               border: `1px solid ${C.dangerBorder}`,
               marginBottom: 20,
-              animation: "fadeIn 0.2s ease-in-out",
             }}
           >
             <AlertCircle size={18} color={C.danger} style={{ flexShrink: 0, marginTop: 1 }} />
@@ -147,7 +163,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               htmlFor="audit-email-input"
               style={{
                 display: "block",
-                fontSize: 12.5,
+                fontSize: 12,
                 fontWeight: 700,
                 color: C.text,
                 marginBottom: 6,
@@ -183,8 +199,9 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                     clearError();
                   }
                 }}
-                placeholder="auditor@audit.local"
+                placeholder="name@audit.local"
                 autoComplete="email"
+                required
                 style={{
                   width: "100%",
                   padding: "11px 12px 11px 38px",
@@ -218,7 +235,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               htmlFor="audit-password-input"
               style={{
                 display: "block",
-                fontSize: 12.5,
+                fontSize: 12,
                 fontWeight: 700,
                 color: C.text,
                 marginBottom: 6,
@@ -256,6 +273,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                 }}
                 placeholder="••••••••••••"
                 autoComplete="current-password"
+                required
                 style={{
                   width: "100%",
                   padding: "11px 40px 11px 38px",
@@ -350,7 +368,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                     animation: "spin 0.8s linear infinite",
                   }}
                 />
-                <span>Verifying credentials...</span>
+                <span>Signing in...</span>
               </>
             ) : (
               <>
@@ -361,255 +379,53 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           </button>
         </form>
 
-        {/* Demo Accounts Quick-Select */}
-        <div style={{ marginTop: 28, paddingTop: 20, borderTop: `1px solid ${C.glassBorderSoft}` }}>
+        {/* Signup Link */}
+        {onNavigateToSignup && (
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 12,
+              marginTop: 24,
+              paddingTop: 18,
+              borderTop: `1px solid ${C.glassBorderSoft}`,
+              textAlign: "center",
             }}
           >
-            <div
+            <p style={{ fontSize: 13, color: C.textSecondary, marginBottom: 8, fontWeight: 500 }}>
+              Don't have an account?
+            </p>
+            <button
+              type="button"
+              id="goto-signup-btn"
+              onClick={onNavigateToSignup}
               style={{
-                fontSize: 11.5,
-                fontWeight: 800,
-                color: C.textSecondary,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                display: "flex",
+                background: "none",
+                border: "none",
+                color: C.accent,
+                fontSize: 13.5,
+                fontWeight: 700,
+                fontFamily: sans,
+                cursor: "pointer",
+                display: "inline-flex",
                 alignItems: "center",
                 gap: 6,
-              }}
-            >
-              <KeyRound size={13} color={C.accent} />
-              Demo Roles & Accounts
-            </div>
-            <span style={{ fontSize: 11, color: C.textTertiary, fontWeight: 500 }}>
-              Click to autofill
-            </span>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {/* Demo Auditor */}
-            <button
-              type="button"
-              id="demo-auditor-pill"
-              onClick={() => handleSelectDemoAccount("auditor@audit.local", "auditor123")}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "9px 12px",
-                borderRadius: 10,
-                background:
-                  email === "auditor@audit.local"
-                    ? "rgba(91,99,232,0.12)"
-                    : "rgba(255,255,255,0.45)",
-                border:
-                  email === "auditor@audit.local"
-                    ? `1.5px solid ${C.accent}`
-                    : `1px solid ${C.glassBorderSoft}`,
-                cursor: "pointer",
-                textAlign: "left",
+                padding: "4px 8px",
+                borderRadius: 8,
                 transition: "all 0.15s ease",
               }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div
-                  style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: 6,
-                    background: "rgba(91,99,232,0.15)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: C.accent,
-                  }}
-                >
-                  <UserCheck size={14} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text }}>
-                    Demo Auditor
-                  </div>
-                  <div style={{ fontSize: 11, color: C.textSecondary, fontFamily: mono }}>
-                    auditor@audit.local
-                  </div>
-                </div>
-              </div>
-              <span
-                style={{
-                  fontSize: 10.5,
-                  fontWeight: 700,
-                  color: C.accent,
-                  background: "rgba(91,99,232,0.10)",
-                  padding: "2px 7px",
-                  borderRadius: 6,
-                }}
-              >
-                Auditor Role
-              </span>
-            </button>
-
-            {/* Demo Lead Auditor */}
-            <button
-              type="button"
-              id="demo-lead-pill"
-              onClick={() => handleSelectDemoAccount("lead@audit.local", "lead123")}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "9px 12px",
-                borderRadius: 10,
-                background:
-                  email === "lead@audit.local"
-                    ? "rgba(15,122,86,0.12)"
-                    : "rgba(255,255,255,0.45)",
-                border:
-                  email === "lead@audit.local"
-                    ? `1.5px solid ${C.success}`
-                    : `1px solid ${C.glassBorderSoft}`,
-                cursor: "pointer",
-                textAlign: "left",
-                transition: "all 0.15s ease",
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(91,99,232,0.08)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "none";
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div
-                  style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: 6,
-                    background: "rgba(15,122,86,0.15)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: C.success,
-                  }}
-                >
-                  <Shield size={14} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text }}>
-                    Demo Lead Auditor
-                  </div>
-                  <div style={{ fontSize: 11, color: C.textSecondary, fontFamily: mono }}>
-                    lead@audit.local
-                  </div>
-                </div>
-              </div>
-              <span
-                style={{
-                  fontSize: 10.5,
-                  fontWeight: 700,
-                  color: C.success,
-                  background: "rgba(15,122,86,0.10)",
-                  padding: "2px 7px",
-                  borderRadius: 6,
-                }}
-              >
-                Lead Role (All Bundles)
-              </span>
-            </button>
-
-            {/* Demo Second Auditor */}
-            <button
-              type="button"
-              id="demo-auditor2-pill"
-              onClick={() => handleSelectDemoAccount("auditor2@audit.local", "auditor123")}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "9px 12px",
-                borderRadius: 10,
-                background:
-                  email === "auditor2@audit.local"
-                    ? "rgba(168,91,11,0.12)"
-                    : "rgba(255,255,255,0.45)",
-                border:
-                  email === "auditor2@audit.local"
-                    ? `1.5px solid ${C.warning}`
-                    : `1px solid ${C.glassBorderSoft}`,
-                cursor: "pointer",
-                textAlign: "left",
-                transition: "all 0.15s ease",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div
-                  style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: 6,
-                    background: "rgba(168,91,11,0.15)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: C.warning,
-                  }}
-                >
-                  <UserCheck size={14} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text }}>
-                    Second Auditor
-                  </div>
-                  <div style={{ fontSize: 11, color: C.textSecondary, fontFamily: mono }}>
-                    auditor2@audit.local
-                  </div>
-                </div>
-              </div>
-              <span
-                style={{
-                  fontSize: 10.5,
-                  fontWeight: 700,
-                  color: C.warning,
-                  background: "rgba(168,91,11,0.10)",
-                  padding: "2px 7px",
-                  borderRadius: 6,
-                }}
-              >
-                Tenant Isolation Scope
-              </span>
+              <UserPlus size={15} />
+              <span>Create an account</span>
             </button>
           </div>
-        </div>
-
-        {/* Security & Compliance Footer Note */}
-        <div
-          style={{
-            marginTop: 22,
-            padding: "10px 12px",
-            borderRadius: 10,
-            background: "rgba(40,48,107,0.04)",
-            border: `1px solid ${C.glassBorderSoft}`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 12,
-            fontSize: 11,
-            color: C.textTertiary,
-            fontWeight: 600,
-          }}
-        >
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <CheckCircle2 size={12} color={C.success} /> JWT HS256 Protected
-          </span>
-          <span>•</span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <CheckCircle2 size={12} color={C.success} /> RBAC Isolated
-          </span>
-          <span>•</span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <CheckCircle2 size={12} color={C.success} /> SHA-256 Verified
-          </span>
-        </div>
+        )}
       </div>
     </div>
   );
 };
+
+export default Login;

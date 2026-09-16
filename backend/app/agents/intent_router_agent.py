@@ -93,13 +93,13 @@ Return ONLY raw JSON."""
 from app.services.entity_resolver import resolve_entities_from_db
 
 
-def _lookup_bundle_by_query(query: str) -> Optional[str]:
-    """Search database for matching bundle_id using entity_resolver."""
+def _lookup_bundle_by_query(query: str, allowed_bundle_ids: Optional[List[str]] = None) -> Optional[str]:
+    """Search database for matching bundle_id using entity_resolver scoped to authorized bundles."""
     if not query:
         return None
     db = SessionLocal()
     try:
-        res = resolve_entities_from_db(db, query)
+        res = resolve_entities_from_db(db, query, allowed_bundle_ids=allowed_bundle_ids)
         if res.get("resolved"):
             return res.get("bundle_id")
     except Exception as exc:
@@ -107,6 +107,19 @@ def _lookup_bundle_by_query(query: str) -> Optional[str]:
     finally:
         db.close()
     return None
+
+
+
+_planner_http_client: Optional[httpx.Client] = None
+
+def _get_planner_http_client() -> httpx.Client:
+    global _planner_http_client
+    if _planner_http_client is None or _planner_http_client.is_closed:
+        _planner_http_client = httpx.Client(
+            timeout=httpx.Timeout(2.0, connect=0.8),
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
+        )
+    return _planner_http_client
 
 
 def _parse_plan(raw: str) -> Optional[RetrievalPlan]:
@@ -123,8 +136,119 @@ def _parse_plan(raw: str) -> Optional[RetrievalPlan]:
         return None
 
 
+def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
+    """
+    Sub-millisecond deterministic retrieval planner for structured and standard domain queries.
+    Bypasses LLM roundtrips when query intent and required documents are unambiguous.
+    """
+    if not user_query or not user_query.strip():
+        return None
+
+    q = user_query.strip().lower()
+
+    # 1. Full Audit / Report Generation
+    if any(k in q for k in ["audit report", "audit summary", "generate report", "generate an audit", "create audit report", "full audit", "executive summary"]):
+        return RetrievalPlan(
+            intent="full_audit",
+            bundle_reference=user_query,
+            required_documents=["invoice", "purchase_order", "grn", "bank_statement"],
+            required_fields="all",
+            verification_required=True,
+            report_required=True,
+        )
+
+    # 2. Failure / Flagged / Investigation / Discrepancy / Variance checks
+    if any(k in q for k in ["failed", "flagged", "why was", "why is", "issue", "problem", "discrepanc", "mismatch", "variance", "exception", "error", "investigat"]):
+        return RetrievalPlan(
+            intent="investigation",
+            bundle_reference=user_query,
+            required_documents=["invoice", "bank_statement", "purchase_order", "grn"],
+            required_fields="all",
+            verification_required=True,
+            report_required=False,
+        )
+
+    # 3. Targeted Document Comparison & 3-Way Match
+    if any(k in q for k in ["compare", "verify", "verification", "match", "three-way", "3-way", "4-way", "align", "does the invoice match"]):
+        req_docs = ["invoice"]
+        if "grn" in q or "goods" in q or "delivery" in q:
+            req_docs.append("grn")
+        if "po" in q or "purchase order" in q or "order" in q:
+            req_docs.append("purchase_order")
+        if "bank" in q or "payment" in q or "paid" in q:
+            req_docs.append("bank_statement")
+        if len(req_docs) == 1:
+            req_docs = ["invoice", "purchase_order", "grn", "bank_statement"]
+
+        return RetrievalPlan(
+            intent="comparison",
+            bundle_reference=user_query,
+            required_documents=list(set(req_docs)),
+            required_fields="all",
+            verification_required=True,
+            report_required=False,
+        )
+
+    # 4. Payment / Bank Statement lookups & Settlement checks
+    if any(k in q for k in ["paid", "payment", "bank statement", "statement", "debit", "credit", "bank ref", "account balance", "fully paid", "settled"]):
+        return RetrievalPlan(
+            intent="payment_lookup",
+            bundle_reference=user_query,
+            required_documents=["invoice", "bank_statement"],
+            required_fields="all",
+            verification_required=True,
+            report_required=False,
+        )
+
+    # 5. GRN / Goods Received lookups
+    if any(k in q for k in ["grn", "goods received", "delivery note", "quantity received", "units received", "received condition"]):
+        return RetrievalPlan(
+            intent="lookup",
+            bundle_reference=user_query,
+            required_documents=["grn"],
+            required_fields=["qty_received", "line_items", "delivery_note_number", "grn_number", "received_condition"],
+            verification_required=False,
+            report_required=False,
+        )
+
+    # 6. Purchase Order lookups
+    if any(k in q for k in ["purchase order", "ordered", "po number", "po items", "po amount"]) and not ("invoice" in q or "inv" in q):
+        return RetrievalPlan(
+            intent="lookup",
+            bundle_reference=user_query,
+            required_documents=["purchase_order"],
+            required_fields=["line_items", "total_amount", "po_number", "subtotal", "tax_amount"],
+            verification_required=False,
+            report_required=False,
+        )
+
+    # 7. Invoice lookups
+    if any(k in q for k in ["invoice", "inv-", "inv ", "tax invoice", "total amount", "subtotal", "tax amount", "invoice date", "due date"]):
+        return RetrievalPlan(
+            intent="lookup",
+            bundle_reference=user_query,
+            required_documents=["invoice"],
+            required_fields=["total_amount", "subtotal", "tax_amount", "invoice_number", "vendor_name", "line_items", "due_date", "invoice_date"],
+            verification_required=False,
+            report_required=False,
+        )
+
+    # 8. Overview / Cross-bundle / System status queries
+    if any(k in q for k in ["show all", "list all", "all bundles", "overview", "all verified", "all invoices", "system status", "health"]):
+        return RetrievalPlan(
+            intent="lookup",
+            bundle_reference=user_query,
+            required_documents=["invoice"],
+            required_fields="all",
+            verification_required=False,
+            report_required=False,
+        )
+
+    return None
+
+
 def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
-    """Call Ollama LLM to get RetrievalPlan.
+    """Call Ollama LLM to get RetrievalPlan for complex/ambiguous queries.
     Fallback: OpenRouter -> None (triggers heuristic fallback).
     """
     user_msg = "User question: " + json.dumps(user_query) + "\n\nGenerate the retrieval plan JSON."
@@ -138,17 +262,17 @@ def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
                 "format": "json",
                 "stream": False,
             }
-            with httpx.Client(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
-                res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
-                if res.status_code == 200:
-                    plan = _parse_plan(res.json().get("response", "{}"))
-                    if plan:
-                        logger.info(f"[IntentRouterAgent] Using Ollama LLM planner ({settings.OLLAMA_MODEL})")
-                        return plan
-                    else:
-                        logger.warning("[IntentRouterAgent] Ollama planner returned invalid JSON")
+            client = _get_planner_http_client()
+            res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
+            if res.status_code == 200:
+                plan = _parse_plan(res.json().get("response", "{}"))
+                if plan:
+                    logger.info(f"[IntentRouterAgent] Using Ollama LLM planner ({settings.OLLAMA_MODEL})")
+                    return plan
                 else:
-                    logger.warning(f"[IntentRouterAgent] Ollama HTTP {res.status_code}: {res.text}")
+                    logger.warning("[IntentRouterAgent] Ollama planner returned invalid JSON")
+            else:
+                logger.warning(f"[IntentRouterAgent] Ollama HTTP {res.status_code}: {res.text}")
         except httpx.TimeoutException as exc:
             logger.warning(f"[IntentRouterAgent] Ollama planner timed out (fast-fail): {exc}")
         except httpx.ConnectError as exc:
@@ -156,7 +280,7 @@ def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
         except Exception as exc:
             logger.warning(f"[IntentRouterAgent] Ollama planner error: {exc}")
 
-    # ── 3. Fallback to OpenRouter if key is valid ──────────────────────────
+    # ── 2. Fallback to OpenRouter if key is valid ──────────────────────────
     api_key = settings.OPENROUTER_API_KEY or ""
     if api_key and not api_key.startswith("your_"):
         try:
@@ -174,14 +298,14 @@ def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
                 ],
                 "response_format": {"type": "json_object"},
             }
-            with httpx.Client(timeout=15.0) as client:
-                res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
-                if res.status_code == 200:
-                    raw = res.json()["choices"][0]["message"]["content"]
-                    plan = _parse_plan(raw)
-                    if plan:
-                        logger.info("[IntentRouterAgent] Using OpenRouter LLM planner")
-                        return plan
+            client = _get_planner_http_client()
+            res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
+            if res.status_code == 200:
+                raw = res.json()["choices"][0]["message"]["content"]
+                plan = _parse_plan(raw)
+                if plan:
+                    logger.info("[IntentRouterAgent] Using OpenRouter LLM planner")
+                    return plan
         except Exception as exc:
             logger.warning(f"[IntentRouterAgent] OpenRouter planner error: {exc}")
 
@@ -195,19 +319,25 @@ def _heuristic_fallback_plan(user_query: str) -> RetrievalPlan:
     verif = False
     rep = False
 
+    if any(k in q for k in ["failed", "flagged", "why was", "why is", "issue", "problem", "discrepanc", "mismatch", "variance", "exception", "error", "investigat"]):
+        verif = True
+        req_docs = ["invoice", "bank_statement", "purchase_order", "grn"]
+
     if any(k in q for k in ["quantity", "received", "grn", "delivered", "delivery"]):
         req_docs.append("grn")
-    if any(k in q for k in ["paid", "payment", "bank", "ref", "reference", "credited", "debited"]):
+    if any(k in q for k in ["paid", "payment", "bank", "ref", "reference", "credited", "debited", "fully paid", "settled"]):
         req_docs.append("bank_statement")
+        req_docs.append("invoice")
+        verif = True
     if any(k in q for k in ["vendor", "invoice", "tax", "subtotal", "amount", "due"]):
         req_docs.append("invoice")
     if any(k in q for k in ["po", "purchase order", "ordered", "terms"]):
         req_docs.append("purchase_order")
     if any(k in q for k in ["compare", "verify", "match", "three-way", "3-way", "4-way", "audit report",
-                             "audit summary", "generate", "summary", "report"]):
+                             "audit summary", "generate", "summary", "report", "align"]):
         verif = True
         req_docs = ["invoice", "purchase_order", "grn", "bank_statement"]
-    if any(k in q for k in ["report", "summary", "audit report", "audit summary", "generate"]):
+    if any(k in q for k in ["report", "audit report", "audit summary", "executive summary"]):
         rep = True
 
     if not req_docs:
@@ -253,12 +383,16 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
 
     logger.info(f"[IntentRouterAgent] Analyzing query: '{user_query}'")
 
-    plan = _call_planner_llm(user_query)
-    if not plan:
-        logger.warning("[IntentRouterAgent] LLM planner unavailable - using heuristic fallback plan")
-        plan = _heuristic_fallback_plan(user_query)
+    plan = _fast_path_plan(user_query)
+    if plan:
+        logger.info(f"[IntentRouterAgent] High-speed deterministic plan created: intent={plan.intent}")
     else:
-        logger.info(f"[IntentRouterAgent] LLM plan adopted directly without heuristic override")
+        plan = _call_planner_llm(user_query)
+        if not plan:
+            logger.warning("[IntentRouterAgent] LLM planner unavailable - using heuristic fallback plan")
+            plan = _heuristic_fallback_plan(user_query)
+        else:
+            logger.info(f"[IntentRouterAgent] LLM plan adopted directly without heuristic override")
 
     # Canonical rule: Any audit report, comparison, or verification requires all 4 documents
     if plan.report_required or plan.verification_required or plan.intent in ("full_audit", "comparison", "verification"):
@@ -272,15 +406,19 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
     resolved_bid = None
     entity_err = None
     matches = []
+    authorized_bundle_ids = state.get("authorized_bundle_ids")
+
     try:
-        resolution = resolve_entities_from_db(db, user_query)
+        resolution = resolve_entities_from_db(db, user_query, allowed_bundle_ids=authorized_bundle_ids)
         if resolution.get("resolved"):
             resolved_bid = resolution.get("bundle_id")
             matches = resolution.get("matches", [])
         else:
             entity_err = resolution.get("error")
             if _is_valid_bundle_uuid(bundle_id_input):
-                resolved_bid = str(bundle_id_input).strip()
+                bid_cand = str(bundle_id_input).strip()
+                if authorized_bundle_ids is None or bid_cand in set(authorized_bundle_ids):
+                    resolved_bid = bid_cand
     finally:
         db.close()
 

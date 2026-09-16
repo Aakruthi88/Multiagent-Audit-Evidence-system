@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.agents.graph import compiled_graph
-from app.api.deps import get_current_user, get_db, verify_bundle_access
+from app.api.deps import get_current_user, get_db, verify_bundle_access, get_authorized_bundle_ids
 from app.core.logging import logger
 from app.models import User
 
@@ -58,6 +58,8 @@ class RunResponse(BaseModel):
     report: Optional[Dict[str, Any]]
     retrieval_plan: Optional[Dict[str, Any]] = None
     required_documents: Optional[List[str]] = None
+    agent_timings: Optional[Dict[str, int]] = None
+    total_pipeline_time_ms: Optional[int] = None
     errors: list
 
 
@@ -96,15 +98,22 @@ def run_graph(
     if req.bundle_id:
         verify_bundle_access(req.bundle_id, current_user, db)
 
+    # Resolve authorized bundle IDs for pre-retrieval authorization scoping
+    authorized_bundle_ids = get_authorized_bundle_ids(current_user, db)
+
     logger.info(
         f"[POST /run] user={current_user.email} (role={current_user.role}) bundle_id={req.bundle_id} action={req.action} query={req.query!r}"
     )
 
     # ── Build initial state ────────────────────────────────────────────────────
     initial_state: Dict[str, Any] = {
-        # Core
+        # Core & Auth scoping
         "bundle_id": req.bundle_id,
         "user_query": req.query,
+        "user_id": str(current_user.user_id),
+        "user_role": (current_user.role or "auditor").lower().strip(),
+        "authorized_bundle_ids": authorized_bundle_ids,
+
 
         # Intent — pre-set if provided directly (skips LLM classification)
         "action": req.action if req.action else None,
@@ -181,5 +190,7 @@ def run_graph(
         report=final_state.get("report"),
         retrieval_plan=plan_dump,
         required_documents=required_docs,
+        agent_timings=final_state.get("agent_timings"),
+        total_pipeline_time_ms=final_state.get("total_pipeline_time_ms"),
         errors=final_state.get("errors") or [],
     )

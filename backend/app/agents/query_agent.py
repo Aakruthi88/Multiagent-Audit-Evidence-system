@@ -30,6 +30,17 @@ from app.models.models import (
     PurchaseOrder, POLineItem, Vendor, VerificationCheck, VerificationRun,
 )
 
+_query_http_client: Optional[httpx.Client] = None
+
+def _get_query_http_client() -> httpx.Client:
+    global _query_http_client
+    if _query_http_client is None or _query_http_client.is_closed:
+        _query_http_client = httpx.Client(
+            timeout=httpx.Timeout(120.0, connect=5.0),
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
+        )
+    return _query_http_client
+
 
 def _clean_answer_text(raw_text: str) -> str:
     """Strip thinking process or preambles from response text using tag extraction with fallback."""
@@ -406,14 +417,15 @@ _VERIFICATION_SYSTEM_PROMPT = GROUNDING_RULES + """
 You are an enterprise Audit Intelligence Assistant.
 The deterministic verification engine has executed all 3-way and 4-way matching rules against the source documents and is the AUTHORITATIVE SOLE SOURCE OF TRUTH.
 
-Your task is to write a concise, professional natural-language audit explanation paragraph that directly answers the user's specific question (e.g. whether documents match, why a transaction was flagged, total amounts, or payment status).
+Your task is to write a clear, complete, professional natural-language audit explanation that directly answers the user's specific question (e.g. whether documents match, why a transaction or bundle was flagged/failed, total amounts, or payment status).
 
 CRITICAL GROUNDING & ACCURACY RULES:
-1. Direct Answer: Answer the user's question directly in the opening sentence. State what was verified, exact document numbers (Invoice #, PO #, GRN #), exact amounts or quantities, and the verdict clearly.
-2. Grounding: Answer ONLY from the supplied deterministic verification results and evidence table. Do NOT invent, assume, or alter any numbers, dates, or facts.
-3. Zero Speculation: Do NOT use speculation words ("fraud", "unauthorized", "backdated", "approved") unless explicitly stated in the deterministic findings. If evidence is missing or ambiguous, state clearly that it cannot be determined from the available documents.
-4. No Redundant Headers: Do NOT output markdown section headers (like "## Verification Result" or "### Summary"). The UI renders structured tables and badges automatically below your response.
-5. Return ONLY the final natural-language explanation paragraph."""
+1. Direct Answer: Answer the user's question directly in the opening sentence. State what was verified, exact document numbers (Invoice #, PO #, GRN #), exact amounts or quantities in ₹, and the verdict or findings clearly.
+2. Absolute Grounding: Answer ONLY from the supplied deterministic verification results and evidence table. Do NOT invent, assume, alter, or infer numbers, dates, or causes.
+3. Failure / Flagging Reasons: If the user asks why a transaction, bundle, or invoice was failed/flagged/rejected, explain the actual retrieved deterministic evidence and verification findings (e.g. amount mismatch between invoice and PO/payment, short shipment, missing document). If the available evidence does not establish any failure reason or discrepancy, you MUST explicitly state that the available evidence does not establish the reason. You must NEVER claim that amounts exceed dates or invent speculative financial causes.
+4. Zero Speculation: Do NOT use speculation words ("fraud", "unauthorized", "backdated", "approved") unless explicitly stated in the deterministic findings. If evidence is missing or ambiguous, state clearly that it cannot be determined from the available documents.
+5. No Redundant Headers: Do NOT output markdown section headers (like "## Verification Result" or "### Summary"). The UI renders structured tables and badges automatically below your response.
+6. Completeness: Include all essential financial details (totals in ₹, subtotal and tax breakdowns, dates, check counts, and specific discrepancies) without artificial brevity or filler text."""
 
 
 def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict] = None) -> str:
@@ -428,8 +440,11 @@ def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict]
     if any(k in q_lower for k in ["total", "amount", "subtotal", "tax", "price"]) and inv:
         tot = inv.get("total_amount")
         num = inv.get("invoice_number", "N/A")
+        sub = inv.get("subtotal")
+        tax = inv.get("tax_amount")
         if tot is not None:
-            return f"Invoice {num} total amount is {_format_amount(tot)} (Vendor: {vendor})."
+            breakdown = f" (Subtotal: {_format_amount(sub)}, Tax: {_format_amount(tax)})" if sub is not None and tax is not None else ""
+            return f"The total of Invoice {num} is {_format_amount(tot)}{breakdown} from vendor {vendor}."
     if any(k in q_lower for k in ["quantity", "qty", "received", "grn", "units"]) and grn:
         lines = grn.get("line_items") or []
         if lines:
@@ -445,8 +460,8 @@ def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict]
         txns = bank.get("transactions") or []
         if txns:
             t0 = txns[0]
-            amt = _format_amount(t0.get("amount") or t0.get("debit_amount"))
-            return f"Bank record indicates payment of {amt} with status: {status}."
+            amt = _format_amount(t0.get("amount") or t0.get("debit_amount") or t0.get("debit"))
+            return f"Bank statement confirms payment of {amt} with status: {status}."
         return f"Payment status: {status}."
     return "The requested information is not available in the retrieved evidence."
 
@@ -477,27 +492,31 @@ def _build_result_metadata(evidence: dict, bundle_id: Optional[str]) -> dict:
 def _build_intent_system_prompt(intent: str = "") -> str:
     return GROUNDING_RULES + """
 You are an enterprise Audit Intelligence Assistant.
-Answer the user's exact question directly, concisely, and professionally using only the supplied evidence.
+Answer the user's exact question directly, completely, and professionally using only the supplied evidence.
 The supplied evidence contains the verified, matching records retrieved for the query.
-Do not invent facts, numbers, or dates.
-State specific document numbers, values, and vendor names directly in the opening sentence.
-Do not claim that the document is missing or not mentioned when its details are present in the evidence table.
-Provide a clear, natural-language explanation in 1-2 concise paragraphs.
+Do not invent facts, numbers, dates, or speculative causes.
+State specific document numbers, values in ₹ (including subtotal and tax breakdowns where available), dates, and vendor names directly.
+Do not claim that a document is missing or not mentioned when its details are present in the evidence table.
+If the evidence does not establish an answer to the query, state clearly that the requested information is not available in the retrieved records.
 Do not output markdown section headers or raw data dumps.
-Return only the final answer."""
+Return only the final answer text."""
 
 
 def _is_verification_query(user_query: str, plan: Optional[dict], verification_info: Optional[dict]) -> bool:
     if plan:
         if plan.get("verification_required") is True:
             return True
-        if plan.get("intent") in ("comparison", "verification", "full_audit"):
+        if plan.get("intent") in ("comparison", "verification", "full_audit", "investigation"):
             return True
-        if plan.get("intent") in ("lookup", "field_lookup", "payment_lookup") and plan.get("verification_required") is False:
+        if plan.get("intent") in ("lookup", "field_lookup") and plan.get("verification_required") is False:
             return False
     q = (user_query or "").lower()
-    verif_keywords = ["verify", "verification", "3-way", "4-way", "three-way", "four-way", "compare"]
-    if any(k in q for k in verif_keywords) and verification_info and (verification_info.get("checks") or verification_info.get("verdict")):
+    verif_keywords = [
+        "verify", "verification", "3-way", "4-way", "three-way", "four-way", "compare",
+        "match", "failed", "flagged", "discrepanc", "mismatch", "variance", "why was", "why is",
+        "paid", "difference", "reconcil", "error", "issue"
+    ]
+    if any(k in q for k in verif_keywords) and verification_info and (verification_info.get("checks") or verification_info.get("verdict") or verification_info.get("discrepancies")):
         return True
     return False
 
@@ -521,14 +540,22 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
         user_prompt = (
             f"User question: {json.dumps(user_query)}\n\n"
             f"Authoritative Deterministic Verification Results (SOURCE OF TRUTH):\n{deterministic_verif_report}\n\n"
-            f"Evidence Documents Table:\n{evidence_json}"
+            f"Evidence Documents Table:\n{evidence_json}\n\n"
+            f"Provide a complete, factually grounded answer directly answering the question using only the verified evidence above. "
+            f"Include relevant amounts (₹), dates, document references, and check/discrepancy findings where applicable. "
+            f"If no failure reason or discrepancy exists in the retrieved evidence, state that clearly and do not invent any reasons."
         )
-        max_tokens = 600
+        max_tokens = 350
     else:
         intent = plan.get("intent", "lookup") if plan else "lookup"
         system_prompt = _build_intent_system_prompt(intent)
-        user_prompt = f"User question: {json.dumps(user_query)}\n\nEvidence Table:\n{evidence_json}"
-        max_tokens = 300
+        user_prompt = (
+            f"User question: {json.dumps(user_query)}\n\n"
+            f"Evidence Table:\n{evidence_json}\n\n"
+            f"Provide a complete, factually grounded answer directly answering the question using only the verified evidence above. "
+            f"State exact document numbers, values in ₹ (with subtotal and tax breakdown if available), dates, and vendor names."
+        )
+        max_tokens = 250
 
     # ── 1. Call Ollama (local qwen2.5:3b) ───────────────────────────────────
     if settings.OLLAMA_HOST:
@@ -541,26 +568,27 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
                 "options": {
                     "num_predict": max_tokens,
                     "temperature": 0.1,
+                    "num_ctx": 4096,
                 },
             }
-            with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-                res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
-                if res.status_code == 200:
-                    raw = res.json().get("response", "").strip()
-                    logger.info(f"[QueryAgent] Ollama ({ollama_model}) raw response: {raw[:300]}")
-                    cleaned = _clean_answer_text(raw)
-                    REFUSAL_PATTERNS = [
-                        "not available in the retrieved evidence",
-                        "i cannot answer",
-                        "i don't have",
-                        "information is not available",
-                        "no information provided",
-                        "cannot determine",
-                    ]
-                    is_refusal = any(p in cleaned.lower() for p in REFUSAL_PATTERNS)
-                    if cleaned and not is_refusal:
-                        logger.info("[QueryAgent] Using Ollama LLM answer")
-                        return cleaned
+            client = _get_query_http_client()
+            res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
+            if res.status_code == 200:
+                raw = res.json().get("response", "").strip()
+                logger.info(f"[QueryAgent] Ollama ({ollama_model}) raw response: {raw[:300]}")
+                cleaned = _clean_answer_text(raw)
+                REFUSAL_PATTERNS = [
+                    "not available in the retrieved evidence",
+                    "i cannot answer",
+                    "i don't have",
+                    "information is not available",
+                    "no information provided",
+                    "cannot determine",
+                ]
+                is_refusal = any(p in cleaned.lower() for p in REFUSAL_PATTERNS)
+                if cleaned and not is_refusal:
+                    logger.info("[QueryAgent] Using Ollama LLM answer")
+                    return cleaned
         except Exception as exc:
             logger.warning(f"[QueryAgent] Ollama synthesis error: {exc}")
 
@@ -583,19 +611,19 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
                 "max_tokens": max_tokens,
                 "temperature": 0.2,
             }
-            with httpx.Client(timeout=30.0) as client:
-                res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
-                if res.status_code == 200:
-                    resp_json = res.json()
-                    choices = resp_json.get("choices", [])
-                    if choices:
-                        msg = choices[0].get("message") or {}
-                        raw = (msg.get("content") or "").strip()
-                        if raw:
-                            cleaned = _clean_answer_text(raw)
-                            if cleaned:
-                                logger.info("[QueryAgent] Using OpenRouter LLM answer")
-                                return cleaned
+            client = _get_query_http_client()
+            res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
+            if res.status_code == 200:
+                resp_json = res.json()
+                choices = resp_json.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message") or {}
+                    raw = (msg.get("content") or "").strip()
+                    if raw:
+                        cleaned = _clean_answer_text(raw)
+                        if cleaned:
+                            logger.info("[QueryAgent] Using OpenRouter LLM answer")
+                            return cleaned
         except Exception as exc:
             logger.warning(f"[QueryAgent] OpenRouter synthesis error: {exc}")
 
@@ -616,13 +644,16 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
     return template_facts
 
 
-def _fetch_status_bundles(db, query_filters: Optional[dict] = None) -> List[dict]:
-    """Fetch bundle status rows from DB for system status queries."""
+def _fetch_status_bundles(db, query_filters: Optional[dict] = None, allowed_bundle_ids: Optional[List[str]] = None) -> List[dict]:
+    """Fetch bundle status rows from DB for system status queries, scoped to authorized bundles."""
     try:
         q = db.query(AuditBundle)
+        if allowed_bundle_ids is not None:
+            q = q.filter(AuditBundle.bundle_id.in_(allowed_bundle_ids))
         if query_filters and "status" in query_filters:
             q = q.filter(AuditBundle.status == query_filters["status"])
         bundles = q.order_by(AuditBundle.created_at.desc()).limit(50).all()
+
 
         rows = []
         for b in bundles:
@@ -651,17 +682,29 @@ def _fetch_status_bundles(db, query_filters: Optional[dict] = None) -> List[dict
                     db.query(VerificationCheck)
                     .filter(
                         VerificationCheck.run_id == vrun.run_id,
-                        VerificationCheck.status == "fail",
+                        VerificationCheck.status.in_(["fail", "warning"]),
                     )
                     .all()
                 )
                 failed_checks = [
                     {
-                        "check_name": c.check_name,
+                        "check_name": c.check_name or c.check_type,
+                        "check_type": c.check_type or c.check_name,
                         "explanation": c.explanation,
                         "variance": str(c.variance) if c.variance is not None else None,
                     }
                     for c in failed
+                ]
+
+                discs = db.query(Discrepancy).filter(Discrepancy.run_id == vrun.run_id).all()
+                discrepancies_list = [
+                    {
+                        "category": d.category,
+                        "description": d.description,
+                        "severity": d.severity,
+                        "recommended_action": d.recommended_action,
+                    }
+                    for d in discs
                 ]
 
             rows.append({
@@ -672,6 +715,7 @@ def _fetch_status_bundles(db, query_filters: Optional[dict] = None) -> List[dict
                 "verdict": verdict,
                 "risk_score": risk_score,
                 "failed_checks": failed_checks,
+                "discrepancies": discrepancies_list,
             })
         return rows
     except Exception as exc:
@@ -683,22 +727,28 @@ def _synthesize_status_answer(user_query: str, bundles_list: List[dict]) -> str:
     """Generate concise natural language summary for multi-bundle/status queries."""
     q_lower = (user_query or "").lower()
     total_bundles = len(bundles_list)
-    flagged_bundles = [b for b in bundles_list if b.get("overall_status") == "flagged" or b.get("risk_score", 0) > 0 or b.get("failed_checks")]
+    flagged_bundles = [b for b in bundles_list if b.get("overall_status") == "flagged" or b.get("risk_score", 0) > 0 or b.get("failed_checks") or b.get("discrepancies")]
 
-    # If asking specifically about amount mismatches
-    if "amount mismatch" in q_lower or "amount mismatches" in q_lower or "mismatch" in q_lower:
-        amount_flagged = []
+    # If asking specifically about amount mismatches or discrepancies
+    if any(k in q_lower for k in ["amount mismatch", "amount mismatches", "mismatch", "discrepanc"]):
+        mismatch_flagged = []
         for b in bundles_list:
+            discs = b.get("discrepancies") or []
             failed = b.get("failed_checks") or []
-            amt_fails = [f for f in failed if any(k in (f.get("check_name") or "").lower() for k in ["amount", "total", "subtotal", "arithmetic", "tax"])]
-            if amt_fails:
-                amount_flagged.append((b, amt_fails))
+            amt_items = [d.get("description") for d in discs if "amount" in (d.get("category") or "").lower() or "amount" in (d.get("description") or "").lower() or "total" in (d.get("description") or "").lower()]
+            for f in failed:
+                if any(k in (f.get("check_name") or "").lower() for k in ["amount", "total", "subtotal", "arithmetic", "tax"]):
+                    exp = f.get("explanation") or f.get("check_name")
+                    if exp and exp not in amt_items:
+                        amt_items.append(exp)
+            if amt_items:
+                mismatch_flagged.append((b, amt_items))
 
-        if amount_flagged:
-            lines = [f"Found {len(amount_flagged)} bundle(s) with amount mismatches:"]
-            for b, fails in amount_flagged:
-                exp_list = "; ".join(f.get("explanation") or f.get("check_name") for f in fails)
-                lines.append(f"- Transaction {b.get('txn_reference') or b.get('bundle_id')}: {exp_list}")
+        if mismatch_flagged:
+            lines = [f"Found {len(mismatch_flagged)} bundle(s) with amount mismatches:"]
+            for b, items in mismatch_flagged:
+                item_str = "; ".join(items)
+                lines.append(f"- Transaction {b.get('txn_reference') or b.get('bundle_id')}: {item_str}")
             return "\n".join(lines)
         else:
             return "No amount mismatches were found across the evaluated audit bundles."
@@ -969,13 +1019,15 @@ def query_node(state: BundleState) -> Dict[str, Any]:
         return {"report": report_output, "answer": not_found_answer}
 
     # ── CASE 1: System-wide bundle status / cross-bundle query ─────────────────
+    authorized_bundle_ids = state.get("authorized_bundle_ids")
     if _is_status_query(user_query, retrieval_plan, bundle_id):
         logger.info("[QueryAgent] Detected system status / cross-bundle query")
         db = SessionLocal()
         try:
-            bundles_list = _fetch_status_bundles(db, query_filters)
+            bundles_list = _fetch_status_bundles(db, query_filters, allowed_bundle_ids=authorized_bundle_ids)
         finally:
             db.close()
+
 
         status_answer = _synthesize_status_answer(user_query, bundles_list)
 

@@ -173,12 +173,25 @@ def verification_node(state: BundleState) -> Dict[str, Any]:
             "risk_score": 0.0,
         }
 
+    authorized_bundle_ids = state.get("authorized_bundle_ids")
+    if authorized_bundle_ids is not None and str(bundle_id) not in set(authorized_bundle_ids):
+        logger.error(f"[Verification Agent] Unauthorized verification attempt for bundle {bundle_id}")
+        return {
+            "errors": [f"Access to bundle {bundle_id} is not authorized."],
+            "verification_checks": [],
+            "discrepancies": [],
+            "verdict": "error",
+            "severity": "critical",
+            "risk_score": 0.0,
+        }
+
     logger.info(f"[Verification Agent] Starting for bundle {bundle_id}")
     db: Session = SessionLocal()
     try:
         bundle = db.query(AuditBundle).filter(AuditBundle.bundle_id == bundle_id).first()
         if not bundle:
-            return {"errors": [f"Bundle {bundle_id} not found â€” cannot run verification."]}
+            return {"errors": [f"Bundle {bundle_id} not found — cannot run verification."]}
+
 
         # â”€â”€ Step 1: Update bundle status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         bundle.status = "verifying"

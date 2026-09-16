@@ -1,0 +1,112 @@
+[
+  {
+    "index": 1,
+    "name": "1. Exact invoice lookup",
+    "query": "What is the total amount of Invoice 200005?",
+    "cold_ms": 10090.092300088145,
+    "warm_ms": 18909.743399941362,
+    "status_code": 200,
+    "bundle_id": "a06f46d0-6bea-444a-bd88-ab37e3941a92",
+    "action": "status_query",
+    "verdict": null
+  },
+  {
+    "index": 2,
+    "name": "2. Invoice vs PO match",
+    "query": "Does Invoice 200005 match Purchase Order 100005?",
+    "cold_ms": 20376.571299973875,
+    "warm_ms": 3956.7243000492454,
+    "status_code": 200,
+    "bundle_id": "a06f46d0-6bea-444a-bd88-ab37e3941a92",
+    "action": "reverify",
+    "verdict": "clean"
+  },
+  {
+    "index": 3,
+    "name": "3. Invoice vs GRN comparison",
+    "query": "Compare Invoice 200005 with GRN-2026-0005",
+    "cold_ms": 37885.9625000041,
+    "warm_ms": 36838.26240000781,
+    "status_code": 200,
+    "bundle_id": "a06f46d0-6bea-444a-bd88-ab37e3941a92",
+    "action": "reverify",
+    "verdict": "clean"
+  },
+  {
+    "index": 4,
+    "name": "4. Payment status query",
+    "query": "What is the payment status and amount for Invoice 200005?",
+    "cold_ms": 15450.994199956767,
+    "warm_ms": 2799.7848000377417,
+    "status_code": 200,
+    "bundle_id": "a06f46d0-6bea-444a-bd88-ab37e3941a92",
+    "action": "status_query",
+    "verdict": null
+  },
+  {
+    "index": 5,
+    "name": "5. Discrepancies check",
+    "query": "Show me all discrepancies in bundle TXN-2026-001",
+    "cold_ms": 19882.58139998652,
+    "warm_ms": 4564.970699953847,
+    "status_code": 200,
+    "bundle_id": "c7731888-0852-478e-8b33-842c7ebdf109",
+    "action": "reverify",
+    "verdict": "clean"
+  },
+  {
+    "index": 6,
+    "name": "6. Audit report query",
+    "query": "Generate an audit report for Invoice 200005",
+    "cold_ms": 31350.621399935335,
+    "warm_ms": 13557.520700036548,
+    "status_code": 200,
+    "bundle_id": "a06f46d0-6bea-444a-bd88-ab37e3941a92",
+    "action": "reverify",
+    "verdict": "clean"
+  },
+  {
+    "index": 7,
+    "name": "7. Verification check query",
+    "query": "Verify bundle for PO 100005",
+    "cold_ms": 6011.786699993536,
+    "warm_ms": 4095.6464000046253,
+    "status_code": 200,
+    "bundle_id": "a06f46d0-6bea-444a-bd88-ab37e3941a92",
+    "action": "reverify",
+    "verdict": "clean"
+  },
+  {
+    "index": 8,
+    "name": "8. Nonexistent invoice",
+    "query": "What is the status of Invoice INV-999999?",
+    "cold_ms": 126.01990008261055,
+    "warm_ms": 143.76180002000183,
+    "status_code": 200,
+    "bundle_id": null,
+    "action": "status_query",
+    "verdict": null
+  },
+  {
+    "index": 9,
+    "name": "9. Cross-bundle status query",
+    "query": "Show all verified bundles",
+    "cold_ms": 18251.523199956864,
+    "warm_ms": 3897.121599991806,
+    "status_code": 200,
+    "bundle_id": null,
+    "action": "status_query",
+    "verdict": null
+  },
+  {
+    "index": 10,
+    "name": "10. Natural language query",
+    "query": "Why was the payment flagged for vendor Apex?",
+    "cold_ms": 14010.077100014314,
+    "warm_ms": 5523.733000038192,
+    "status_code": 200,
+    "bundle_id": "c7731888-0852-478e-8b33-842c7ebdf109",
+    "action": "status_query",
+    "verdict": null
+  }
+]

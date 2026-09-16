@@ -104,18 +104,16 @@ def extract_potential_entities(query: str) -> List[Dict[str, str]]:
     return candidates
 
 
-def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
+def resolve_entities_from_db(
+    db: Session,
+    query: str,
+    allowed_bundle_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
     """
     Resolve all matching entities from user query against SQLite database using priority order.
-    Returns:
-    {
-       "resolved": True/False,
-       "bundle_id": str or None,
-       "matches": [
-          {"entity_type": ..., "entity_value": ..., "bundle_id": ...}
-       ],
-       "error": None or {"error_type": "ENTITY_NOT_FOUND", "entity_type": ..., "entity_value": ...}
-    }
+    Enforces PRE-RETRIEVAL role scoping if allowed_bundle_ids is provided:
+    - If allowed_bundle_ids is None (Admin): resolves across all bundles.
+    - If allowed_bundle_ids is a List[str] (Auditor): resolves ONLY across authorized bundles.
     """
     if not query or not query.strip():
         return {
@@ -125,6 +123,9 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
             "error": {"error_type": "ENTITY_NOT_FOUND", "entity_type": "empty_query", "entity_value": ""}
         }
 
+    # Normalize allowed_bundle_ids set
+    allowed_set = set(str(bid) for bid in allowed_bundle_ids) if allowed_bundle_ids is not None else None
+
     q_text = query.strip()
     q_norm = normalize_code(q_text)
     q_lower = q_text.lower()
@@ -132,119 +133,163 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
     matches = []
     bundle_ids_found = set()
 
-    # ── Strategy 1: Transaction Reference ──────────────────────────────────────
-    bundles = db.query(AuditBundle).all()
-    for b in bundles:
-        if b.txn_reference:
-            b_txn_norm = normalize_code(b.txn_reference)
-            if b_txn_norm and (b_txn_norm in q_norm or b.txn_reference.lower() in q_lower):
-                b_id = str(b.bundle_id)
-                matches.append({
-                    "entity_type": "transaction_reference",
-                    "entity_value": b.txn_reference,
-                    "bundle_id": b_id
-                })
-                bundle_ids_found.add(b_id)
+    def is_bundle_authorized(bid: Any) -> bool:
+        if bid is None:
+            return False
+        if allowed_set is None:
+            return True
+        return str(bid) in allowed_set
 
-    # ── Strategy 2: Bundle UUID ────────────────────────────────────────────────
-    for b in bundles:
-        b_id_str = str(b.bundle_id).lower()
-        if b_id_str in q_lower:
-            matches.append({
-                "entity_type": "bundle_uuid",
-                "entity_value": b_id_str,
-                "bundle_id": b_id_str
-            })
-            bundle_ids_found.add(b_id_str)
+    # ── Fast-Path Strategy: Candidate-driven targeted SQL lookups ──────────────
+    candidates = extract_potential_entities(q_text)
 
-    # ── Strategy 3: Invoice Number ─────────────────────────────────────────────
-    invoices = db.query(Invoice).all()
-    for inv in invoices:
-        if inv.invoice_number:
-            inv_norm = normalize_code(inv.invoice_number)
-            if (inv_norm and inv_norm in q_norm) or (inv.invoice_number.lower() in q_lower):
-                b_id = str(inv.bundle_id)
-                matches.append({
-                    "entity_type": "invoice_number",
-                    "entity_value": inv.invoice_number,
-                    "bundle_id": b_id
-                })
-                bundle_ids_found.add(b_id)
+    for cand in candidates:
+        c_raw = cand.get("raw", "")
+        c_norm = cand.get("normalized", "")
+        c_type = cand.get("type_hint", "")
 
-    # ── Strategy 4: PO Number ──────────────────────────────────────────────────
-    pos = db.query(PurchaseOrder).all()
-    for po in pos:
-        if po.po_number:
-            po_norm = normalize_code(po.po_number)
-            if (po_norm and po_norm in q_norm) or (po.po_number.lower() in q_lower):
-                b_id = str(po.bundle_id)
-                matches.append({
-                    "entity_type": "po_number",
-                    "entity_value": po.po_number,
-                    "bundle_id": b_id
-                })
-                bundle_ids_found.add(b_id)
-
-    # ── Strategy 5: GRN Number ─────────────────────────────────────────────────
-    grns = db.query(GRN).all()
-    for grn in grns:
-        if grn.grn_number:
-            grn_norm = normalize_code(grn.grn_number)
-            if (grn_norm and grn_norm in q_norm) or (grn.grn_number.lower() in q_lower):
-                b_id = str(grn.bundle_id)
-                matches.append({
-                    "entity_type": "grn_number",
-                    "entity_value": grn.grn_number,
-                    "bundle_id": b_id
-                })
-                bundle_ids_found.add(b_id)
-
-    # ── Strategy 6: Delivery Note Number ──────────────────────────────────────
-    for grn in grns:
-        if grn.delivery_note_number:
-            dn_norm = normalize_code(grn.delivery_note_number)
-            if (dn_norm and dn_norm in q_norm) or (grn.delivery_note_number.lower() in q_lower):
-                b_id = str(grn.bundle_id)
-                matches.append({
-                    "entity_type": "delivery_note",
-                    "entity_value": grn.delivery_note_number,
-                    "bundle_id": b_id
-                })
-                bundle_ids_found.add(b_id)
-
-    # ── Strategy 7: Bank Reference ────────────────────────────────────────────
-    bts = db.query(BankTransaction).all()
-    for bt in bts:
-        ref = bt.extracted_ref
-        if ref:
-            ref_norm = normalize_code(ref)
-            if (ref_norm and ref_norm in q_norm) or (ref.lower() in q_lower):
-                stmt = db.query(BankStatement).filter(BankStatement.statement_id == bt.statement_id).first()
-                if stmt and stmt.bundle_id:
-                    b_id = str(stmt.bundle_id)
+        if c_type == "bundle_uuid" and is_valid_uuid(c_raw):
+            b_id_str = str(c_raw).lower()
+            if is_bundle_authorized(b_id_str):
+                b_match = db.query(AuditBundle).filter(AuditBundle.bundle_id == b_id_str).first()
+                if b_match:
                     matches.append({
-                        "entity_type": "bank_reference",
-                        "entity_value": ref,
+                        "entity_type": "bundle_uuid",
+                        "entity_value": b_id_str,
+                        "bundle_id": b_id_str
+                    })
+                    bundle_ids_found.add(b_id_str)
+
+        elif c_type == "transaction_reference":
+            tb_q = db.query(AuditBundle).filter(AuditBundle.txn_reference.ilike(f"%{c_raw}%"))
+            if allowed_set is not None:
+                tb_q = tb_q.filter(AuditBundle.bundle_id.in_(list(allowed_set)))
+            for b in tb_q.limit(5).all():
+                b_id = str(b.bundle_id)
+                if is_bundle_authorized(b_id):
+                    matches.append({
+                        "entity_type": "transaction_reference",
+                        "entity_value": b.txn_reference,
                         "bundle_id": b_id
                     })
                     bundle_ids_found.add(b_id)
 
-    # ── Strategy 8: Bank Account Number ───────────────────────────────────────
-    stmts = db.query(BankStatement).all()
-    for stmt in stmts:
-        if stmt.account_number:
-            acc_norm = normalize_code(stmt.account_number)
-            if (acc_norm and acc_norm in q_norm) or (stmt.account_number.lower() in q_lower):
-                b_id = str(stmt.bundle_id)
-                matches.append({
-                    "entity_type": "bank_account",
-                    "entity_value": stmt.account_number,
-                    "bundle_id": b_id
-                })
-                bundle_ids_found.add(b_id)
+        elif c_type == "invoice_number":
+            # Direct search for invoice number (raw and clean digits if prefixed)
+            inv_nums = [c_raw]
+            m_inv = re.match(r'^(?:INV|INVOICE)[-_]?(\d{4,})$', c_raw, re.IGNORECASE)
+            if m_inv:
+                inv_nums.append(m_inv.group(1))
 
-    # ── Strategy 9: Vendor Name ───────────────────────────────────────────────
+            for inum in inv_nums:
+                inv_q = db.query(Invoice).filter(Invoice.invoice_number.ilike(f"%{inum}%"))
+                if allowed_set is not None:
+                    inv_q = inv_q.filter(Invoice.bundle_id.in_(list(allowed_set)))
+                for inv in inv_q.limit(5).all():
+                    b_id = str(inv.bundle_id)
+                    if is_bundle_authorized(b_id):
+                        matches.append({
+                            "entity_type": "invoice_number",
+                            "entity_value": inv.invoice_number,
+                            "bundle_id": b_id
+                        })
+                        bundle_ids_found.add(b_id)
+
+        elif c_type == "po_number":
+            po_nums = [c_raw]
+            m_po = re.match(r'^(?:PO|ORDER)[-_]?(\d{4,})$', c_raw, re.IGNORECASE)
+            if m_po:
+                po_nums.append(m_po.group(1))
+
+            for pnum in po_nums:
+                po_q = db.query(PurchaseOrder).filter(PurchaseOrder.po_number.ilike(f"%{pnum}%"))
+                if allowed_set is not None:
+                    po_q = po_q.filter(PurchaseOrder.bundle_id.in_(list(allowed_set)))
+                for po in po_q.limit(5).all():
+                    b_id = str(po.bundle_id)
+                    if is_bundle_authorized(b_id):
+                        matches.append({
+                            "entity_type": "po_number",
+                            "entity_value": po.po_number,
+                            "bundle_id": b_id
+                        })
+                        bundle_ids_found.add(b_id)
+
+        elif c_type == "grn_number":
+            grn_q = db.query(GRN).filter(GRN.grn_number.ilike(f"%{c_raw}%"))
+            if allowed_set is not None:
+                grn_q = grn_q.filter(GRN.bundle_id.in_(list(allowed_set)))
+            for grn in grn_q.limit(5).all():
+                b_id = str(grn.bundle_id)
+                if is_bundle_authorized(b_id):
+                    matches.append({
+                        "entity_type": "grn_number",
+                        "entity_value": grn.grn_number,
+                        "bundle_id": b_id
+                    })
+                    bundle_ids_found.add(b_id)
+
+        elif c_type == "delivery_note":
+            dn_q = db.query(GRN).filter(GRN.delivery_note_number.ilike(f"%{c_raw}%"))
+            if allowed_set is not None:
+                dn_q = dn_q.filter(GRN.bundle_id.in_(list(allowed_set)))
+            for grn in dn_q.limit(5).all():
+                b_id = str(grn.bundle_id)
+                if is_bundle_authorized(b_id):
+                    matches.append({
+                        "entity_type": "delivery_note",
+                        "entity_value": grn.delivery_note_number,
+                        "bundle_id": b_id
+                    })
+                    bundle_ids_found.add(b_id)
+
+        elif c_type == "bank_reference":
+            bt_q = db.query(BankTransaction).filter(BankTransaction.extracted_ref.ilike(f"%{c_raw}%"))
+            for bt in bt_q.limit(5).all():
+                stmt = db.query(BankStatement).filter(BankStatement.statement_id == bt.statement_id).first()
+                if stmt and stmt.bundle_id and is_bundle_authorized(stmt.bundle_id):
+                    b_id = str(stmt.bundle_id)
+                    matches.append({
+                        "entity_type": "bank_reference",
+                        "entity_value": bt.extracted_ref,
+                        "bundle_id": b_id
+                    })
+                    bundle_ids_found.add(b_id)
+
+        elif c_type == "generic_id":
+            # Check Invoice first
+            inv_q = db.query(Invoice).filter(Invoice.invoice_number.ilike(f"%{c_raw}%"))
+            if allowed_set is not None:
+                inv_q = inv_q.filter(Invoice.bundle_id.in_(list(allowed_set)))
+            for inv in inv_q.limit(5).all():
+                b_id = str(inv.bundle_id)
+                if is_bundle_authorized(b_id):
+                    matches.append({"entity_type": "invoice_number", "entity_value": inv.invoice_number, "bundle_id": b_id})
+                    bundle_ids_found.add(b_id)
+
+            # Check PO
+            po_q = db.query(PurchaseOrder).filter(PurchaseOrder.po_number.ilike(f"%{c_raw}%"))
+            if allowed_set is not None:
+                po_q = po_q.filter(PurchaseOrder.bundle_id.in_(list(allowed_set)))
+            for po in po_q.limit(5).all():
+                b_id = str(po.bundle_id)
+                if is_bundle_authorized(b_id):
+                    matches.append({"entity_type": "po_number", "entity_value": po.po_number, "bundle_id": b_id})
+                    bundle_ids_found.add(b_id)
+
+            # Check GRN
+            grn_q = db.query(GRN).filter(GRN.grn_number.ilike(f"%{c_raw}%"))
+            if allowed_set is not None:
+                grn_q = grn_q.filter(GRN.bundle_id.in_(list(allowed_set)))
+            for grn in grn_q.limit(5).all():
+                b_id = str(grn.bundle_id)
+                if is_bundle_authorized(b_id):
+                    matches.append({"entity_type": "grn_number", "entity_value": grn.grn_number, "bundle_id": b_id})
+                    bundle_ids_found.add(b_id)
+
+    # ── Fallback Strategy: If no candidate matched, check vendor name / full scan ──
     if not bundle_ids_found:
+        # Vendor match
         vendors = db.query(Vendor).all()
         stop_words = {'pvt', 'ltd', 'inc', 'corp', 'co', 'and', 'was', 'made', 'to', 'payment', 'paid', 'invoice', 'po', 'grn', 'for', 'with', 'the', 'is', 'has', 'been', 'what', 'which', 'show', 'compare', 'does'}
         q_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', q_lower)
@@ -267,8 +312,12 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
                     is_vendor_match = True
 
             if is_vendor_match:
-                inv = db.query(Invoice).filter(Invoice.vendor_id == v.vendor_id).first()
-                if inv and inv.bundle_id:
+                inv_q = db.query(Invoice).filter(Invoice.vendor_id == v.vendor_id)
+                if allowed_set is not None:
+                    inv_q = inv_q.filter(Invoice.bundle_id.in_(list(allowed_set)))
+                inv = inv_q.first()
+
+                if inv and inv.bundle_id and is_bundle_authorized(inv.bundle_id):
                     b_id = str(inv.bundle_id)
                     matches.append({
                         "entity_type": "vendor_name",
@@ -277,8 +326,12 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
                     })
                     bundle_ids_found.add(b_id)
                 else:
-                    po = db.query(PurchaseOrder).filter(PurchaseOrder.vendor_id == v.vendor_id).first()
-                    if po and po.bundle_id:
+                    po_q = db.query(PurchaseOrder).filter(PurchaseOrder.vendor_id == v.vendor_id)
+                    if allowed_set is not None:
+                        po_q = po_q.filter(PurchaseOrder.bundle_id.in_(list(allowed_set)))
+                    po = po_q.first()
+
+                    if po and po.bundle_id and is_bundle_authorized(po.bundle_id):
                         b_id = str(po.bundle_id)
                         matches.append({
                             "entity_type": "vendor_name",
@@ -287,10 +340,13 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
                         })
                         bundle_ids_found.add(b_id)
 
-    # ── Strategy 10: General Bank / Statement queries without specific ID ──────
+    # ── General Bank / Statement queries without specific ID ──────
     if not bundle_ids_found and any(k in q_lower for k in ["closing balance", "opening balance", "bank balance", "statement balance", "bank statement"]):
-        stmt = db.query(BankStatement).first()
-        if stmt and stmt.bundle_id:
+        stmt_q = db.query(BankStatement)
+        if allowed_set is not None:
+            stmt_q = stmt_q.filter(BankStatement.bundle_id.in_(list(allowed_set)))
+        stmt = stmt_q.first()
+        if stmt and stmt.bundle_id and is_bundle_authorized(stmt.bundle_id):
             b_id = str(stmt.bundle_id)
             matches.append({
                 "entity_type": "bank_account",
@@ -307,10 +363,10 @@ def resolve_entities_from_db(db: Session, query: str) -> Dict[str, Any]:
         )
     ]
     if not bundle_ids_found and not explicit_id_candidates:
-        sem_matches = semantic_search_documents(db, q_text, top_k=5)
+        sem_matches = semantic_search_documents(db, q_text, top_k=5, allowed_bundle_ids=allowed_bundle_ids)
         for sm in sem_matches:
             # Score threshold check (>= 0.35) to avoid irrelevant document false positives
-            if sm.get("score", 0.0) >= 0.35 and sm.get("bundle_id"):
+            if sm.get("score", 0.0) >= 0.35 and sm.get("bundle_id") and is_bundle_authorized(sm["bundle_id"]):
                 b_id = sm["bundle_id"]
                 matches.append({
                     "entity_type": "semantic_search",
@@ -475,14 +531,21 @@ def sync_chroma_bundle_index(db: Session):
         logger.warning(f"[EntityResolver] ChromaDB indexing error: {exc}")
 
 
-def semantic_search_documents(db: Session, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-    """Perform vector similarity search over all indexed audit documents."""
+def semantic_search_documents(
+    db: Session,
+    query: str,
+    top_k: int = 5,
+    allowed_bundle_ids: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """Perform vector similarity search over all indexed audit documents scoped to authorized bundles."""
     sync_chroma_bundle_index(db)
     try:
         from app.agents.search_agent import _get_chroma
         collection = _get_chroma()
         if not collection:
             return []
+
+        allowed_set = set(str(bid) for bid in allowed_bundle_ids) if allowed_bundle_ids is not None else None
 
         res = collection.query(query_texts=[query], n_results=top_k)
         results = []
@@ -492,8 +555,11 @@ def semantic_search_documents(db: Session, query: str, top_k: int = 5) -> List[D
             distances = res["distances"][0] if res.get("distances") else [0.0] * len(docs)
 
             for doc, meta, dist in zip(docs, metadatas, distances):
+                bid = meta.get("bundle_id")
+                if allowed_set is not None and bid not in allowed_set:
+                    continue
                 results.append({
-                    "bundle_id": meta.get("bundle_id"),
+                    "bundle_id": bid,
                     "doc_type": meta.get("doc_type"),
                     "doc_number": meta.get("doc_number"),
                     "vendor_name": meta.get("vendor_name"),
@@ -506,4 +572,5 @@ def semantic_search_documents(db: Session, query: str, top_k: int = 5) -> List[D
     except Exception as exc:
         logger.warning(f"[EntityResolver] Semantic search error: {exc}")
         return []
+
 

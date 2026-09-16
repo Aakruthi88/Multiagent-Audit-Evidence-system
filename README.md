@@ -330,33 +330,37 @@ You can query the system directly through the **Ask Query** page:
 
 ---
 
-## 🔒 Security & Compliance (Deloitte Rubric Hardened)
+## 🔒 Security & Compliance (2-Role Enterprise RBAC & Data Isolation)
 
-Phase 3 introduces comprehensive security hardening designed to meet enterprise and regulatory audit standards:
+The system implements a hardened 2-role security model designed to meet enterprise audit standards:
 
-1. **JWT Authentication & Passwords**:
-   - Secure JSON Web Tokens with `HS256` encryption and 32+ byte cryptographic key.
-   - User password storage hashed using direct `bcrypt` algorithm.
-   - Built-in demo accounts provisioned at startup:
-     - **Auditor**: `auditor@audit.local` (Password: `auditor123`)
-     - **Lead Auditor**: `lead@audit.local` (Password: `lead123`)
-     - **Second Auditor**: `auditor2@audit.local` (Password: `auditor123`)
-2. **Role-Based Access Control (RBAC)**:
-   - Server-side role enforcement (`auditor` vs `lead`).
-   - Auditor roles are scoped strictly to their own audit engagements.
-   - Lead roles have cross-engagement visibility for supervision and review.
-3. **Client & Bundle Data Isolation**:
-   - Bundles are bound to `uploaded_by` user identifier.
-   - Strict server-side verification guard (`verify_bundle_access`): users attempting to view, run queries on, or download documents from another user's bundle receive `HTTP 403 Forbidden`.
-4. **Document & Storage Security**:
+1. **Strict 2-Role RBAC Model**:
+   - **Admin**: Full organization-wide visibility across all audit engagements, bundles, users, and global compliance analytics (`User Management` view).
+   - **Auditor**: Restricted strictly to their own assigned audit engagements. Uploads documents, creates bundles, and searches/queries/verifies only within their authorized scope.
+2. **Self-Service Auditor Registration (`/signup`)**:
+   - Clean, secure registration workflow requiring full name, email, and password confirmation (min 6 characters).
+   - Duplicate email prevention (`HTTP 400 Bad Request`).
+   - Server-enforced auditor role binding: all registrations are strictly provisioned with `role = "auditor"`. Any client-supplied role escalation attempts are strictly rejected.
+3. **Pre-Retrieval Authorization & Scoping**:
+   - Authorization claims (`user_id`, `role`, `authorized_bundle_ids`) are validated **before** SQL or ChromaDB vector retrieval occurs.
+   - When an Auditor queries the system (e.g. *"What is the invoice amount for INV-200099?"*), entity resolution and vector similarity are bounded to the user's authorized bundle IDs. Documents and bundles belonging to other auditors are completely invisible and cannot be resolved, inspected, verified, or exported.
+4. **JWT Authentication & Clean Login Interface**:
+   - Secure JSON Web Tokens with `HS256` encryption and 32+ byte cryptographic secret key.
+   - User passwords securely hashed using direct `bcrypt` algorithm.
+   - Clean, uncluttered login UI without exposed demo credentials or autofill shortcuts.
+   - Initialized accounts:
+     - **Admin**: `admin@audit.local` (Role: `admin`)
+     - **Auditor**: `auditor@audit.local` (Role: `auditor`)
+     - **Second Auditor**: `auditor2@audit.local` (Role: `auditor`)
+5. **Client & Bundle Data Isolation**:
+   - Bundles are permanently bound to `uploaded_by` user identifier.
+   - Server-side access guard (`verify_bundle_access`): users attempting to view, run queries on, or download documents from another user's bundle receive `HTTP 403 Forbidden`.
+6. **Document & Storage Security**:
    - Multi-layer Path Traversal prevention (blocking `..`, `/`, `\\`, and verifying resolved path containment).
    - Strict filename regex enforcement (`^[a-zA-Z0-9_\-\.]+\.pdf$`).
    - File type validation (only `.pdf` allowed) and maximum upload size limits (25 MB, `HTTP 413`).
    - SHA-256 document hashing for tamper detection and forensic integrity.
-5. **CORS Hardening**:
-   - Explicit origin whitelist configured via environment variable (`CORS_ORIGINS`).
-   - Global wildcard (`*`) is strictly blocked in production configurations.
-6. **Fail-Closed Architecture**:
+7. **Fail-Closed Architecture**:
    - All protected endpoints require valid Bearer token.
    - Missing, expired, or tampered tokens result in immediate `HTTP 401 Unauthorized`.
 

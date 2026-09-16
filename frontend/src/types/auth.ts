@@ -1,4 +1,4 @@
-export type UserRole = 'auditor' | 'lead' | string;
+export type UserRole = 'admin' | 'auditor' | string;
 
 export interface AuthUser {
   user_id: string;
@@ -10,6 +10,21 @@ export interface AuthUser {
 export interface LoginCredentials {
   email: string;
   password: string;
+}
+
+export interface SignupCredentials {
+  name: string;
+  email: string;
+  password: string;
+  confirm_password?: string;
+}
+
+export interface UserListItem {
+  user_id: string;
+  name: string;
+  email: string;
+  role: string;
+  created_at?: string | null;
 }
 
 export interface TokenResponse {
@@ -25,3 +40,4 @@ export interface AuthState {
   isLoading: boolean;
   error: string | null;
 }
+

@@ -210,6 +210,17 @@ def _enforce_monetary_integrity(narrative: str, evidence: Dict[str, Any]) -> str
 
     return result
 
+_REPORT_HTTP_CLIENT: Optional[httpx.Client] = None
+
+def _get_report_http_client() -> httpx.Client:
+    global _REPORT_HTTP_CLIENT
+    if _REPORT_HTTP_CLIENT is None or _REPORT_HTTP_CLIENT.is_closed:
+        _REPORT_HTTP_CLIENT = httpx.Client(
+            timeout=httpx.Timeout(60.0, connect=3.0),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
+        )
+    return _REPORT_HTTP_CLIENT
+
 def _generate_narrative(
     checks: List[Dict[str, Any]],
     discrepancies: List[Dict[str, Any]],
@@ -269,24 +280,25 @@ def _generate_narrative(
                 "prompt": f"{_NARRATIVE_SYSTEM}\n\n{prompt}",
                 "stream": False,
                 "options": {
-                    "num_predict": 800,
-                    "temperature": 0.2,
+                    "num_predict": 450,
+                    "temperature": 0.1,
+                    "num_ctx": 4096,
                 },
             }
-            with httpx.Client(timeout=httpx.Timeout(180.0, connect=3.0)) as client:
-                res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
-                if res.status_code == 200:
-                    text = res.json().get("response", "").strip()
-                    logger.info(f"[ReportAgent] Ollama raw response (first 200 chars): {text[:200]}")
-                    cleaned = _clean_narrative_text(text)
-                    if cleaned:
-                        cleaned = _enforce_monetary_integrity(cleaned, evidence)
-                        logger.info("[ReportAgent] Using Ollama LLM narrative")
-                        return cleaned
-                    else:
-                        logger.warning("[ReportAgent] Ollama narrative empty after cleaning")
+            client = _get_report_http_client()
+            res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
+            if res.status_code == 200:
+                text = res.json().get("response", "").strip()
+                logger.info(f"[ReportAgent] Ollama raw response (first 200 chars): {text[:200]}")
+                cleaned = _clean_narrative_text(text)
+                if cleaned:
+                    cleaned = _enforce_monetary_integrity(cleaned, evidence)
+                    logger.info("[ReportAgent] Using Ollama LLM narrative")
+                    return cleaned
                 else:
-                    logger.warning(f"[ReportAgent] Ollama HTTP {res.status_code}: {res.text}")
+                    logger.warning("[ReportAgent] Ollama narrative empty after cleaning")
+            else:
+                logger.warning(f"[ReportAgent] Ollama HTTP {res.status_code}: {res.text}")
         except Exception as exc:
             logger.warning(f"[ReportAgent] Ollama narrative error: {exc}")
 
@@ -306,17 +318,17 @@ def _generate_narrative(
                     {"role": "system", "content": _NARRATIVE_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                "max_tokens": 800,
+                "max_tokens": 300,
             }
-            with httpx.Client(timeout=25.0) as client:
-                res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
-                if res.status_code == 200:
-                    text = res.json()["choices"][0]["message"]["content"].strip()
-                    cleaned = _clean_narrative_text(text)
-                    if cleaned:
-                        cleaned = _enforce_monetary_integrity(cleaned, evidence)
-                        logger.info("[ReportAgent] Using OpenRouter LLM narrative")
-                        return cleaned
+            client = _get_report_http_client()
+            res = client.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
+            if res.status_code == 200:
+                text = res.json()["choices"][0]["message"]["content"].strip()
+                cleaned = _clean_narrative_text(text)
+                if cleaned:
+                    cleaned = _enforce_monetary_integrity(cleaned, evidence)
+                    logger.info("[ReportAgent] Using OpenRouter LLM narrative")
+                    return cleaned
         except Exception as exc:
             logger.warning(f"[ReportAgent] OpenRouter narrative error: {exc}")
 
