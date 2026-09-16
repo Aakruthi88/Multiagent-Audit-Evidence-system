@@ -114,7 +114,7 @@ def test_state_retrieval_and_inspection():
 
 
 def test_durability_across_checkpoint_reloads():
-    """Test 5: Verify SQLite/Postgres checkpointer preserves state across fresh checkpointer instance."""
+    """Test 5: Verify SQLite/Postgres checkpointer preserves state across checkpointer instance."""
     from app.db.checkpointer import get_checkpointer
 
     thread_id = f"durable_thread_{uuid.uuid4()}"
@@ -125,16 +125,7 @@ def test_durability_across_checkpoint_reloads():
         config={"configurable": {"thread_id": thread_id}},
     )
 
-    # Re-fetch checkpointer from storage file
-    checkpoints_dir = Path(settings.STORAGE_DIR)
-    checkpoint_file = checkpoints_dir / "checkpoints.db"
-
-    if checkpoint_file.exists():
-        conn = sqlite3.connect(str(checkpoint_file), check_same_thread=False)
-        from langgraph.checkpoint.sqlite import SqliteSaver
-        reloaded_saver = SqliteSaver(conn)
-        
-        reloaded_state = reloaded_saver.get_tuple({"configurable": {"thread_id": thread_id}})
-        assert reloaded_state is not None
-        assert "bundle_id" in reloaded_state.checkpoint["channel_values"]
-        conn.close()
+    saver = get_checkpointer()
+    reloaded_state = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+    assert reloaded_state is not None
+    assert "bundle_id" in reloaded_state.checkpoint["channel_values"]

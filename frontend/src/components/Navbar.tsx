@@ -1,6 +1,16 @@
 import React from "react";
-import { ShieldCheck, UploadCloud, LayoutDashboard, MessageSquareText, Layers3, Home, FileText } from "lucide-react";
-import { C, sans } from "../theme";
+import {
+  ShieldCheck,
+  UploadCloud,
+  LayoutDashboard,
+  MessageSquareText,
+  Layers3,
+  Home,
+  FileText,
+  LogOut,
+} from "lucide-react";
+import { useAuth } from "../context/AuthContext";
+import { C, sans, mono } from "../theme";
 
 export type TabKey = "home" | "dashboard" | "upload" | "bundles" | "ask" | "detail";
 
@@ -11,6 +21,8 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selectedBundleId }) => {
+  const { user, logout } = useAuth();
+
   const navItems: { key: TabKey; label: string; icon: any }[] = [
     { key: "home", label: "Home", icon: Home },
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -18,6 +30,21 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
     { key: "bundles", label: "Bundles", icon: Layers3 },
     { key: "ask", label: "Ask documents", icon: MessageSquareText },
   ];
+
+  // Derive initials from user name or email
+  const getInitials = () => {
+    if (!user) return "AU";
+    if (user.name) {
+      const parts = user.name.trim().split(" ");
+      if (parts.length >= 2) {
+        return (parts[0][0] + parts[1][0]).toUpperCase();
+      }
+      return parts[0].substring(0, 2).toUpperCase();
+    }
+    return user.email.substring(0, 2).toUpperCase();
+  };
+
+  const isLead = user?.role === "lead";
 
   return (
     <div
@@ -29,6 +56,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
         padding: "8px 4px",
         marginBottom: 28,
         fontFamily: sans,
+        position: "relative",
       }}
     >
       {/* Brand */}
@@ -118,26 +146,126 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
         )}
       </nav>
 
-      {/* User Avatar */}
-      <div
-        style={{
-          width: 32,
-          height: 32,
-          borderRadius: "50%",
-          background: `linear-gradient(135deg, ${C.primary}, ${C.accent})`,
-          color: "#fff",
-          fontFamily: sans,
-          fontSize: 12.5,
-          fontWeight: 700,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          boxShadow: "0 4px 10px rgba(91,99,232,0.25)",
-        }}
-        title="Audit Reviewer"
-      >
-        AK
+      {/* User Profile & Logout Area */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+        {/* User Pill / Badge */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "5px 10px 5px 6px",
+            borderRadius: 24,
+            background: "rgba(255,255,255,0.45)",
+            border: `1px solid ${C.glassBorderSoft}`,
+            boxShadow: "0 2px 8px rgba(30,40,90,0.06)",
+          }}
+        >
+          {/* Avatar */}
+          <div
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: "50%",
+              background: isLead
+                ? `linear-gradient(135deg, ${C.success}, #18A979)`
+                : `linear-gradient(135deg, ${C.primary}, ${C.accent})`,
+              color: "#fff",
+              fontFamily: sans,
+              fontSize: 12,
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              boxShadow: isLead
+                ? "0 3px 8px rgba(15,122,86,0.28)"
+                : "0 3px 8px rgba(91,99,232,0.28)",
+            }}
+          >
+            {getInitials()}
+          </div>
+
+          {/* User Details */}
+          <div style={{ display: "flex", flexDirection: "column", minWidth: 0, textAlign: "left" }}>
+            <div
+              style={{
+                fontSize: 12.5,
+                fontWeight: 700,
+                color: C.text,
+                lineHeight: 1.2,
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <span style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {user?.name || "Auditor"}
+              </span>
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  padding: "1.5px 6px",
+                  borderRadius: 6,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                  background: isLead ? C.successBg : "rgba(91,99,232,0.12)",
+                  color: isLead ? C.success : C.accent,
+                  border: `1px solid ${isLead ? C.successBorder : "rgba(91,99,232,0.25)"}`,
+                }}
+              >
+                {isLead ? "Lead" : "Auditor"}
+              </span>
+            </div>
+            <span
+              style={{
+                fontSize: 11,
+                color: C.textTertiary,
+                fontFamily: mono,
+                maxWidth: 160,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={user?.email}
+            >
+              {user?.email || "auditor@audit.local"}
+            </span>
+          </div>
+
+          {/* Logout Button */}
+          <button
+            type="button"
+            id="auth-logout-btn"
+            onClick={logout}
+            title="Sign out of Audit Session"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              borderRadius: 8,
+              background: "rgba(200,50,35,0.08)",
+              border: `1px solid ${C.dangerBorder}`,
+              color: C.danger,
+              cursor: "pointer",
+              marginLeft: 4,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = C.danger;
+              e.currentTarget.style.color = "#fff";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(200,50,35,0.08)";
+              e.currentTarget.style.color = C.danger;
+            }}
+          >
+            <LogOut size={13} />
+          </button>
+        </div>
       </div>
     </div>
   );

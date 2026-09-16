@@ -1,5 +1,6 @@
 """
-Verification API
+Verification API - backend/app/api/v1/verification.py
+-----------------------------------------------------
 POST /api/v1/verification/run/{bundle_id}  → Trigger synchronous 4-way match check
 GET  /api/v1/verification/{run_id}         → Retrieve a specific verification run
 GET  /api/v1/verification/bundle/{bundle_id}/latest → Latest run for a bundle
@@ -9,9 +10,10 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, verify_bundle_access
 from app.db.session import get_db
 from app.models.models import (
-    AuditBundle, VerificationRun, VerificationCheck, Discrepancy
+    AuditBundle, VerificationRun, VerificationCheck, Discrepancy, User
 )
 from app.schemas.verification_schemas import (
     VerificationRunOut, VerificationTriggerResponse
@@ -23,22 +25,22 @@ router = APIRouter(prefix="/verification", tags=["verification"])
 
 
 @router.post("/run/{bundle_id}", response_model=VerificationTriggerResponse)
-def trigger_verification(bundle_id: str, db: Session = Depends(get_db)):
+def trigger_verification(
+    bundle_id: str,
+    bundle: AuditBundle = Depends(verify_bundle_access),
+    db: Session = Depends(get_db)
+):
     """
-    Trigger deterministic 4-way match verification for a bundle.
+    Trigger deterministic 4-way match verification for an authorized bundle.
     Synchronous — waits for all checks to complete before responding.
     The LLM is NOT called here. All logic is deterministic Python.
     """
-    bundle = db.query(AuditBundle).filter(AuditBundle.bundle_id == bundle_id).first()
-    if not bundle:
-        raise HTTPException(status_code=404, detail=f"Bundle {bundle_id} not found")
-
     # Check all documents have been extracted
     docs = bundle.documents
     extracted_types = {d.doc_type for d in docs if d.extraction_status == "success"}
     if not extracted_types:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="No documents have been extracted yet. Run extraction first."
         )
 
@@ -53,7 +55,7 @@ def trigger_verification(bundle_id: str, db: Session = Depends(get_db)):
         risk_score = float(run.overall_risk_score or 0.0)
 
         return VerificationTriggerResponse(
-            bundle_id=bundle_id,
+            bundle_id=str(bundle.bundle_id),
             run_id=str(run.run_id),
             overall_status=run.overall_status,
             overall_risk_score=risk_score,
@@ -71,11 +73,15 @@ def trigger_verification(bundle_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/bundle/{bundle_id}/latest", response_model=VerificationRunOut)
-def get_latest_run(bundle_id: str, db: Session = Depends(get_db)):
-    """Return the most recent verification run for a bundle."""
+def get_latest_run(
+    bundle_id: str,
+    bundle: AuditBundle = Depends(verify_bundle_access),
+    db: Session = Depends(get_db)
+):
+    """Return the most recent verification run for an authorized bundle."""
     run = (
         db.query(VerificationRun)
-        .filter(VerificationRun.bundle_id == bundle_id)
+        .filter(VerificationRun.bundle_id == bundle.bundle_id)
         .order_by(VerificationRun.started_at.desc())
         .first()
     )
@@ -85,11 +91,15 @@ def get_latest_run(bundle_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/bundle/{bundle_id}/all", response_model=List[VerificationRunOut])
-def get_all_runs(bundle_id: str, db: Session = Depends(get_db)):
-    """Return all verification runs for a bundle (audit trail)."""
+def get_all_runs(
+    bundle_id: str,
+    bundle: AuditBundle = Depends(verify_bundle_access),
+    db: Session = Depends(get_db)
+):
+    """Return all verification runs for an authorized bundle (audit trail)."""
     runs = (
         db.query(VerificationRun)
-        .filter(VerificationRun.bundle_id == bundle_id)
+        .filter(VerificationRun.bundle_id == bundle.bundle_id)
         .order_by(VerificationRun.started_at.desc())
         .all()
     )
@@ -97,11 +107,19 @@ def get_all_runs(bundle_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{run_id}", response_model=VerificationRunOut)
-def get_run(run_id: str, db: Session = Depends(get_db)):
-    """Return a specific verification run by run_id."""
+def get_run(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Return a specific verification run by run_id, verifying bundle access."""
     run = db.query(VerificationRun).filter(VerificationRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Verification run not found")
+
+    # Authorize bundle access
+    verify_bundle_access(run.bundle_id, current_user, db)
+
     return _enrich_run(db, run)
 
 

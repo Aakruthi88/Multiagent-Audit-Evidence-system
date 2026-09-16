@@ -1,9 +1,9 @@
-﻿import React, { useEffect, useState, useCallback } from "react";
-import { runAction, getBundle, getBundleTrace, getLatestVerificationRun } from "../api/endpoints";
+import React, { useEffect, useState, useCallback } from "react";
+import { runAction, getBundle, getBundleTrace, getLatestVerificationRun, exportWorkpaper } from "../api/endpoints";
 import { AuditBundle, AgentLog, VerificationRun } from "../types";
 import { DocumentPreviewCard } from "../components/DocumentPreviewCard";
 import { VerificationPanel } from "../components/VerificationPanel";
-import { RefreshCw, ArrowLeft, Cpu, CheckCircle2, AlertTriangle, Sparkles } from "lucide-react";
+import { RefreshCw, ArrowLeft, Cpu, CheckCircle2, AlertTriangle, Sparkles, FileDown, Loader2 } from "lucide-react";
 import {
   C,
   sans,
@@ -27,6 +27,8 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
   const [runReport, setRunReport] = useState<any | null>(null);
   const [runLoading, setRunLoading] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -76,6 +78,19 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
   const extractedDocs = bundle.documents?.filter((d) => d.extraction_status === "success") ?? [];
   const canVerify = extractedDocs.length > 0;
 
+  const handleExportWorkpaper = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await exportWorkpaper(bundleId, bundle?.txn_reference);
+    } catch (err: any) {
+      console.error(err);
+      setExportError(err?.response?.data?.detail || "Failed to download audit workpaper PDF.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div>
       {/* Back Button */}
@@ -119,12 +134,54 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}>
-            <StatusBadge status={bundle.status} />
-            <SecondaryButton onClick={loadData} id="sync-status-btn" icon={RefreshCw} style={{ padding: "6px 12px", fontSize: 12.5 }}>
-              Sync status
-            </SecondaryButton>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <StatusBadge status={bundle.status} />
+              <SecondaryButton onClick={loadData} id="sync-status-btn" icon={RefreshCw} style={{ padding: "6px 12px", fontSize: 12.5 }}>
+                Sync
+              </SecondaryButton>
+            </div>
+
+            <PrimaryButton
+              id="export-workpaper-btn"
+              onClick={handleExportWorkpaper}
+              disabled={exporting}
+              icon={exporting ? undefined : FileDown}
+              style={{
+                padding: "8px 16px",
+                fontSize: 13,
+                fontWeight: 700,
+                background: "linear-gradient(135deg, #1e293b 0%, #334155 100%)",
+                boxShadow: "0 4px 12px rgba(15,23,42,0.18)",
+              }}
+            >
+              {exporting ? (
+                <>
+                  <Loader2 size={14} className="spin" style={{ marginRight: 6 }} /> Generating PDF...
+                </>
+              ) : (
+                "Export Audit Workpaper"
+              )}
+            </PrimaryButton>
           </div>
         </div>
+
+        {exportError && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "10px 14px",
+              background: C.dangerBg,
+              border: `1px solid ${C.dangerBorder}`,
+              borderRadius: 8,
+              color: C.danger,
+              fontSize: 12.5,
+              fontFamily: sans,
+              fontWeight: 600,
+            }}
+          >
+            {exportError}
+          </div>
+        )}
 
         {/* Document coverage bar */}
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.glassBorderSoft}` }}>

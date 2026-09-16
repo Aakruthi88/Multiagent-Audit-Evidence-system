@@ -1,5 +1,20 @@
 import { apiClient } from './client';
 import { AuditBundle, DocumentItem, AgentLog, VerificationSummary, VerificationRun } from '../types';
+import { AuthUser, LoginCredentials, TokenResponse } from '../types/auth';
+
+// ── Authentication API ─────────────────────────────────────────────────────────
+
+export const loginUser = async (credentials: LoginCredentials): Promise<TokenResponse> => {
+  const response = await apiClient.post<TokenResponse>('/auth/login', credentials);
+  return response.data;
+};
+
+export const getCurrentUser = async (): Promise<AuthUser> => {
+  const response = await apiClient.get<AuthUser>('/auth/me');
+  return response.data;
+};
+
+// ── Bundles & Documents API ───────────────────────────────────────────────────
 
 export const createBundle = async (formData: FormData): Promise<AuditBundle> => {
   const response = await apiClient.post<AuditBundle>('/bundles', formData, {
@@ -52,8 +67,8 @@ export const getVerificationRun = async (runId: string): Promise<VerificationRun
   return response.data;
 };
 
+// ── NL Query via /run endpoint ─────────────────────────────────────────────────
 
-// -- NL Query via /run endpoint ---------------------------------------------
 export const runQuery = async (query: string, bundleId?: string): Promise<any> => {
   const response = await apiClient.post<any>('/run', { query, bundle_id: bundleId || undefined });
   return response.data;
@@ -61,5 +76,28 @@ export const runQuery = async (query: string, bundleId?: string): Promise<any> =
 
 export const runAction = async (bundleId: string, action: string): Promise<any> => {
   const response = await apiClient.post<any>('/run', { bundle_id: bundleId, action });
+  return response.data;
+};
+
+// ── Phase 4: Audit Workpaper Export & Business Impact ──────────────────────────
+
+export const exportWorkpaper = async (bundleId: string, txnRef?: string): Promise<void> => {
+  const response = await apiClient.get(`/bundles/${bundleId}/export-workpaper`, {
+    responseType: 'blob',
+  });
+  
+  const blob = new Blob([response.data], { type: 'application/pdf' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', `audit_workpaper_${txnRef || bundleId}.pdf`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+export const getImpactMetrics = async (): Promise<any> => {
+  const response = await apiClient.get<any>('/bundles/metrics/impact');
   return response.data;
 };

@@ -1,24 +1,34 @@
+from pathlib import Path
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, verify_bundle_access
 from app.db.session import get_db
 from app.models.models import (
-    Document, PurchaseOrder, Invoice, GRN, BankStatement
+    Document, PurchaseOrder, Invoice, GRN, BankStatement, User
 )
 from app.schemas.bundle_schemas import DocumentDetailResponse
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+
 @router.get("/{document_id}", response_model=DocumentDetailResponse)
 def get_document_detail(
     document_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """GET /api/v1/documents/{document_id} - Fetch raw text & extracted JSON for a specific document."""
+    """
+    GET /api/v1/documents/{document_id} - Fetch raw text & extracted JSON for a specific document.
+    Enforces bundle authorization and abstracts server filesystem paths.
+    """
     doc = db.query(Document).filter(Document.document_id == document_id).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Enforce bundle-level authorization
+    verify_bundle_access(doc.bundle_id, current_user, db)
 
     extracted_data = None
 
@@ -107,11 +117,15 @@ def get_document_detail(
                 ]
             }
 
+    # Sanitize file_path to relative URL rather than internal disk path
+    safe_filename = Path(doc.file_path).name if doc.file_path else f"{doc.doc_type}.pdf"
+    safe_file_url = f"/api/v1/bundles/{doc.bundle_id}/files/{safe_filename}"
+
     return DocumentDetailResponse(
         document_id=doc.document_id,
         bundle_id=doc.bundle_id,
         doc_type=doc.doc_type,
-        file_path=doc.file_path,
+        file_path=safe_file_url,
         file_hash=doc.file_hash,
         extraction_status=doc.extraction_status,
         extraction_confidence=doc.extraction_confidence,

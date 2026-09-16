@@ -1,9 +1,17 @@
 import os
 from pathlib import Path
+from typing import List, Union
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import ConfigDict, Field, field_validator
+
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+
     PROJECT_NAME: str = "Multi-Agent Audit Evidence Assistant"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
@@ -32,14 +40,33 @@ class Settings(BaseSettings):
     )
     
     # Security
-    SECRET_KEY: str = Field(default="supersecretauditkeyday1", description="JWT secret key")
+    SECRET_KEY: str = Field(
+        default=os.getenv("SECRET_KEY", "deloitte_audit_system_super_secure_jwt_secret_key_2026"),
+        description="JWT secret key"
+    )
     ALGORITHM: str = Field(default="HS256", description="JWT Algorithm")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    # CORS Origins (no wildcard in production)
+    CORS_ORIGINS: List[str] = Field(
+        default=[
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
+        ],
+        description="Allowed CORS origins"
+    )
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",") if i.strip()]
+        elif isinstance(v, (list, str)):
+            return v
+        raise ValueError(v)
+
 
 settings = Settings()
 

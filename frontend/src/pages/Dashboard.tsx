@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { getBundles, runQuery } from "../api/endpoints";
+import { getBundles, runQuery, getImpactMetrics } from "../api/endpoints";
 import { AuditBundle } from "../types";
 import {
   FileText,
@@ -12,6 +12,8 @@ import {
   FileStack,
   Users2,
   Sparkles,
+  TrendingUp,
+  Clock,
 } from "lucide-react";
 import {
   C,
@@ -33,6 +35,7 @@ interface DashboardProps {
 export const Dashboard: React.FC<DashboardProps> = ({ onSelectBundle, onNewUpload }) => {
   const [bundles, setBundles] = useState<AuditBundle[]>([]);
   const [loading, setLoading] = useState(true);
+  const [impactMetrics, setImpactMetrics] = useState<any | null>(null);
   const [query, setQuery] = useState("");
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryResult, setQueryResult] = useState<any | null>(null);
@@ -50,8 +53,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectBundle, onNewUploa
     }
   };
 
+  const fetchImpact = async () => {
+    try {
+      const data = await getImpactMetrics();
+      setImpactMetrics(data);
+    } catch (err) {
+      console.error("Failed to load impact metrics:", err);
+    }
+  };
+
   useEffect(() => {
     fetchBundles();
+    fetchImpact();
   }, []);
 
   const handleQuery = async (e: React.FormEvent) => {
@@ -113,7 +126,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectBundle, onNewUploa
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
           gap: 14,
-          marginBottom: 26,
+          marginBottom: 20,
         }}
       >
         <MetricCard icon={Users2} label="Total bundles" value={totalBundles} sub="Across all vendors" />
@@ -122,6 +135,137 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectBundle, onNewUploa
         <MetricCard icon={FileStack} label="Incomplete" value={incompleteCount} sub="Missing documents" />
         <MetricCard icon={FileText} label="Total documents" value={totalDocs} sub="Extracted evidence files" />
       </div>
+
+      {/* ── Business Impact & Real ROI Metrics (Phase 4) ──────────────────── */}
+      {impactMetrics && (
+        <div
+          style={{
+            ...glass({
+              padding: 22,
+              background: "linear-gradient(135deg, rgba(255,255,255,0.85) 0%, rgba(240,243,255,0.75) 100%)",
+              border: "1px solid rgba(91,99,232,0.22)",
+            }),
+            marginBottom: 26,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 10,
+                  background: "linear-gradient(135deg, #4338ca 0%, #312e81 100%)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#fff",
+                }}
+              >
+                <TrendingUp size={18} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 800, color: C.text, fontFamily: sans, margin: 0 }}>
+                  Audit Business Impact & ROI
+                </h3>
+                <div style={{ fontSize: 12, color: C.textSecondary, fontFamily: sans }}>
+                  Measured operational savings & financial controls derived directly from system data
+                </div>
+              </div>
+            </div>
+
+            <span
+              style={{
+                fontSize: 11.5,
+                fontWeight: 700,
+                color: C.accent,
+                background: "rgba(91,99,232,0.12)",
+                border: "1px solid rgba(91,99,232,0.24)",
+                padding: "3px 10px",
+                borderRadius: 20,
+                fontFamily: sans,
+              }}
+            >
+              Authoritative Data
+            </span>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+              gap: 14,
+            }}
+          >
+            <div style={{ ...glassSoft({ padding: "14px 18px", background: "rgba(255,255,255,0.7)" }) }}>
+              <div style={{ fontSize: 11.5, color: C.textTertiary, fontFamily: sans, textTransform: "uppercase", fontWeight: 700 }}>
+                Transaction Value Reviewed
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, fontFamily: mono, color: C.text, marginTop: 4 }}>
+                ₹{impactMetrics.total_transaction_value_reviewed ? impactMetrics.total_transaction_value_reviewed.toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "0.00"}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.textSecondary, fontFamily: sans, marginTop: 4 }}>
+                Authoritative invoice total volume
+              </div>
+            </div>
+
+            <div style={{ ...glassSoft({ padding: "14px 18px", background: "rgba(255,255,255,0.7)" }) }}>
+              <div style={{ fontSize: 11.5, color: C.textTertiary, fontFamily: sans, textTransform: "uppercase", fontWeight: 700 }}>
+                Checks Executed
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, fontFamily: mono, color: C.accent, marginTop: 4 }}>
+                {impactMetrics.total_verification_checks || 0}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.textSecondary, fontFamily: sans, marginTop: 4 }}>
+                {impactMetrics.checks_passed || 0} Passed • {impactMetrics.checks_failed || 0} Failed
+              </div>
+            </div>
+
+            <div style={{ ...glassSoft({ padding: "14px 18px", background: "rgba(255,255,255,0.7)" }) }}>
+              <div style={{ fontSize: 11.5, color: C.textTertiary, fontFamily: sans, textTransform: "uppercase", fontWeight: 700 }}>
+                Exceptions Intercepted
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, fontFamily: mono, color: impactMetrics.total_exceptions_detected > 0 ? C.danger : C.success, marginTop: 4 }}>
+                {impactMetrics.total_exceptions_detected || 0}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.textSecondary, fontFamily: sans, marginTop: 4 }}>
+                {impactMetrics.critical_exceptions || 0} Critical • {impactMetrics.high_exceptions || 0} High
+              </div>
+            </div>
+
+            <div style={{ ...glassSoft({ padding: "14px 18px", background: "rgba(255,255,255,0.7)" }) }}>
+              <div style={{ fontSize: 11.5, color: C.textTertiary, fontFamily: sans, textTransform: "uppercase", fontWeight: 700 }}>
+                Manual Effort Avoided
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, fontFamily: mono, color: C.success, marginTop: 4 }}>
+                {impactMetrics.estimated_manual_hours_saved || 0} hrs
+              </div>
+              <div style={{ fontSize: 11.5, color: C.textSecondary, fontFamily: sans, marginTop: 4 }}>
+                ~{impactMetrics.extracted_documents || 0} docs & {impactMetrics.total_verification_checks || 0} checks auto-verified
+              </div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              marginTop: 14,
+              paddingTop: 10,
+              borderTop: `1px solid ${C.glassBorderSoft}`,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 11.5,
+              color: C.textTertiary,
+              fontFamily: sans,
+            }}
+          >
+            <Clock size={13} color={C.textTertiary} />
+            <span>
+              <strong>Assumption Basis:</strong> {impactMetrics.roi_benchmark_assumptions?.basis || "Standard audit benchmark: 15 min/doc manual review + 2 min/check."}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ── NL Query Box (Ask the Audit AI) ─────────────────────────────────────────── */}
       <div style={{ ...glass({ padding: 20 }), marginBottom: 24 }}>

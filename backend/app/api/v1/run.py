@@ -21,11 +21,14 @@ results; for pipeline actions the response is the verification/report summary.
 
 from typing import Any, Dict, Optional, List
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.agents.graph import compiled_graph
+from app.api.deps import get_current_user, get_db, verify_bundle_access
 from app.core.logging import logger
+from app.models import User
 
 router = APIRouter(prefix="/run", tags=["run"])
 
@@ -61,7 +64,11 @@ class RunResponse(BaseModel):
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("", response_model=RunResponse)
-def run_graph(req: RunRequest):
+def run_graph(
+    req: RunRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     POST /api/v1/run
 
@@ -84,6 +91,14 @@ def run_graph(req: RunRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid action '{req.action}'. Valid: {sorted(VALID_ACTIONS)}",
         )
+
+    # ── Verify Bundle Access if bundle_id provided ─────────────────────────────
+    if req.bundle_id:
+        verify_bundle_access(req.bundle_id, current_user, db)
+
+    logger.info(
+        f"[POST /run] user={current_user.email} (role={current_user.role}) bundle_id={req.bundle_id} action={req.action} query={req.query!r}"
+    )
 
     # ── Build initial state ────────────────────────────────────────────────────
     initial_state: Dict[str, Any] = {

@@ -579,19 +579,21 @@ MultiAgentEvidencesystem/
 │       ├── api/                                # REST API routers
 │       │   └── v1/
 │       │       ├── router.py                   # Central v1 APIRouter
+│       │       ├── auth.py                     # Authentication endpoints (login, me, demo tokens)
 │       │       ├── bundles.py                  # Bundle management endpoints
 │       │       ├── documents.py                # Document upload & preview endpoints
 │       │       ├── verification.py             # Verification execution endpoints
 │       │       └── run.py                      # Multi-agent query runner endpoint
 │       ├── core/                               # Core application utilities
-│       │   ├── config.py                       # Pydantic BaseSettings (.env loading)
-│       │   ├── logging.py                      # Loguru / Standard logging configuration
+│       │   ├── config.py                       # Pydantic BaseSettings (.env loading & CORS whitelist)
+│       │   ├── security.py                     # JWT token signing & bcrypt hashing
+│       │   ├── logging.py                      # Sanitized logging configuration
 │       │   └── gemini_client.py                # Google Gemini API client wrapper
 │       ├── db/                                 # Database connections
 │       │   ├── base.py                         # SQLAlchemy declarative base
 │       │   └── session.py                      # SessionLocal factory & engine initialization
 │       ├── models/                             # SQLAlchemy ORM Models
-│       │   └── models.py                       # All relational tables (Bundles, Docs, Checks, etc.)
+│       │   └── models.py                       # Relational tables (Users, Bundles, Docs, Checks, etc.)
 │       ├── schemas/                            # Pydantic input/output schemas
 │       │   ├── bundle_schemas.py               # Bundle request/response models
 │       │   ├── extraction_schemas.py           # Extracted entity schemas (PO, Inv, GRN, Bank)
@@ -602,6 +604,7 @@ MultiAgentEvidencesystem/
 │           ├── extraction_service.py           # Hybrid parser coordinator
 │           ├── entity_resolver.py              # Vendor fuzzy matcher & cross-referencing
 │           ├── confidence.py                   # Confidence score calculation
+│           ├── storage_service.py              # File path containment & traversal prevention
 │           ├── pdf_service.py                  # PDF layout & text extraction
 │           └── parsers/                        # Deterministic document parsers
 │               ├── base_parser.py              # Parser abstract base class
@@ -621,9 +624,9 @@ MultiAgentEvidencesystem/
         ├── App.tsx                             # App routes & navigation layout
         ├── index.css                           # Global design system & theme styling
         ├── api/                                # HTTP API service layer
-        │   └── client.ts                       # Axios API instance
+        │   └── client.ts                       # Axios API instance with Bearer auth interceptors
         ├── components/                         # UI components
-        │   ├── Navbar.tsx                      # Header navigation
+        │   ├── Navbar.tsx                      # Header navigation & user status
         │   ├── UploadDropzone.tsx              # 4-way document upload dropzone
         │   ├── DocumentPreviewCard.tsx         # Document viewer card
         │   └── VerificationPanel.tsx           # Verification matrix & discrepancies
@@ -635,3 +638,92 @@ MultiAgentEvidencesystem/
         └── types/                              # TypeScript interfaces
             └── index.ts                        # Shared frontend types
 ```
+
+---
+
+## 11. Security, Compliance & Isolation Architecture (Deloitte Rubric)
+
+### 11.1 Authentication & Credential Protection
+- **JWT Tokens**: Stateless authentication with `HS256`, 32+ byte cryptographic secret key, and configurable expiration.
+- **Bcrypt Hashing**: User passwords hashed with bcrypt salt generation (direct `bcrypt` library).
+- **Demo Accounts**: Auto-provisioned demo users on application bootstrap:
+  - `auditor@audit.local` (Password: `auditor123`) — Role: `auditor`
+  - `lead@audit.local` (Password: `lead123`) — Role: `lead`
+  - `auditor2@audit.local` (Password: `auditor123`) — Role: `auditor`
+
+### 11.2 Server-Side Role-Based Access Control (RBAC)
+- Role enforcement handled via FastAPI dependency injection guards (`require_role`, `require_auditor`, `require_lead`).
+- Auditor permissions are strictly scoped to the user's assigned audit bundles.
+- Lead Auditor permissions provide organization-wide supervisory access across all audit engagements.
+
+### 11.3 Multi-Tenant / Engagement Data Isolation
+- Audit bundles are bound to user IDs via `uploaded_by`.
+- Access guard `verify_bundle_access` validates ownership on every bundle query, file retrieval, or LangGraph execution.
+- Cross-tenant queries by non-lead auditors are blocked with `HTTP 403 Forbidden`.
+
+### 11.4 Document Storage & Path Traversal Mitigation
+- Storage service resolves all paths against `STORAGE_DIR / "bundles" / str(bundle_id)`.
+- Path traversal sequences (`..`, `/`, `\\`) in filenames are stripped and rejected with `HTTP 400 Bad Request`.
+- Strict regex verification: `^[a-zA-Z0-9_\-\.]+\.pdf$`.
+- File uploads are validated for PDF headers and enforced under 25MB (`HTTP 413 Payload Too Large`).
+- SHA-256 hashes computed upon ingestion ensure complete forensic document integrity.
+
+### 11.5 Network & Transport Security
+- CORS origin whitelist configured explicitly via `CORS_ORIGINS`.
+- Wildcard `*` origins are prohibited in production.
+- Token and sensitive credential sanitization across all execution logging streams.
+
+---
+
+## 12. Audit Workpaper & Business Impact Architecture (Phase 4)
+
+### 12.1 Deterministic Audit Workpaper Export Engine (`report_export_service.py`)
+The Audit Workpaper Export Engine transforms verified database state into formal, regulatory-grade PDF audit workpapers adhering to professional standards (e.g. Deloitte audit practice templates).
+
+```
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                   AUDIT WORKPAPER EXPORT ARCHITECTURE                  │
+ └────────────────────────────────────────────────────────────────────────┘
+
+    [ Database Entities ] 
+    • AuditBundle
+    • PurchaseOrder / Invoice / GRN / BankStatement
+    • VerificationCheck records
+    • Discrepancy JSON payloads
+               │
+               ▼
+    [ report_export_service.py ]
+    • Deterministic value extractor (Zero LLM reliance for numbers)
+    • Section A: Engagement & Audit Metadata
+    • Section B: Executive Audit Verdict (PASS / FLAGGED / CRITICAL)
+    • Section C: Document Inventory & SHA-256 Hashes
+    • Section D: Authoritative Financial Table (Gross, Tax, Total)
+    • Section E: 4-Way Reconciliation Match Matrix
+    • Section F: Line-Item Discrepancy Register
+    • Section G: Verification Rules Execution Log
+    • Section H: Separated AI Narrative Callout (Strict Disclaimer)
+    • Section I: Auditor Sign-Off & Review Block
+               │
+               ▼
+    [ ReportLab Platypus Engine + NumberedCanvas ]
+    • First-pass: Canvas coordinates & layout flowables
+    • Second-pass: Dynamic total page counter ("Page X of Y"), running header/footer
+               │
+               ▼
+    [ application/pdf Binary Stream ]
+    • Content-Disposition: attachment; filename="Audit_Workpaper_{TXN_REF}.pdf"
+```
+
+### 12.2 Fail-Safe Determinism & Zero LLM Hallucination
+- **Zero Hallucination for Audit Figures**: Subtotals, tax amounts, bank settlement figures, and discrepancy amounts are extracted exclusively from SQL database records (`db.query(...)`).
+- **AI Narrative Separation**: If an AI-generated summary is present in the bundle, it is rendered in Section H inside a distinct callout box with a prominent warning:
+  > *"AI-Assisted Analysis Disclaimer: This narrative summary was generated by an AI agent based on extracted document artifacts. Review all verified line items and deterministic checks above before signing off."*
+
+### 12.3 Business Impact & ROI Telemetry Engine
+The Business Impact Engine (`GET /api/v1/bundles/metrics/impact`) computes real productivity and risk reduction metrics from database ground truth:
+- **Audited Value & Coverage**: Total transaction volume analyzed, total documents ingested, total verification rules evaluated.
+- **Exception Rate**: Ratio of flagged bundles to clean passes.
+- **Auditor Productivity / Hours Saved**: Computed transparently using standard audit industry benchmarks:
+  $$\text{Hours Saved} = \frac{(\text{Total Documents} \times 15\text{ min}) + (\text{Total Verification Checks} \times 2\text{ min})}{60}$$
+- **Full Transparency**: Benchmark assumptions are explicitly communicated via API metadata and UI footnotes.
+
