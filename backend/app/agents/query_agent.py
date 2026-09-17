@@ -74,6 +74,28 @@ def _clean_answer_text(raw_text: str) -> str:
     return text.strip()
 
 
+def _sanitize_clean_verification_answer(text: str, is_clean_verif: bool) -> str:
+    """Correct any oxymoronic LLM phrasing where a clean item is said to be 'flagged because all checks passed'."""
+    if not text or not is_clean_verif:
+        return text
+
+    pattern1 = re.compile(
+        r"(?i)\b((?:TXN|INV|PO|GRN|Invoice|Transaction|Bundle)?\s*[-A-Z0-9_]*\s*)was flagged because (?:the deterministic verification results? (?:show|indicate) that )?all checks passed",
+    )
+    text = pattern1.sub(r"\1was NOT flagged. All deterministic verification checks passed", text)
+
+    pattern2 = re.compile(
+        r"(?i)\b((?:TXN|INV|PO|GRN|Invoice|Transaction|Bundle)?\s*[-A-Z0-9_]*\s*)was flagged due to (?:a |the )?(?:user's )?(?:misunderstanding|assumption|premise)",
+    )
+    text = pattern2.sub(r"\1was NOT flagged. Any assumption of failure is incorrect as all checks passed", text)
+
+    pattern3 = re.compile(
+        r"(?i)\b((?:TXN|INV|PO|GRN|Invoice|Transaction|Bundle)?\s*[-A-Z0-9_]*\s*)was flagged because (?:it was|the transaction was|the invoice was) verified clean",
+    )
+    text = pattern3.sub(r"\1was NOT flagged; it was verified clean", text)
+    return text
+
+
 def _filter_evidence_for_prompt(user_query: str, evidence: dict, plan: Optional[dict] = None) -> dict:
     """Filter evidence_table to present clean, relevant document data to the LLM."""
     req_docs = plan.get("required_documents") if plan else None
@@ -491,7 +513,11 @@ CRITICAL GROUNDING & ACCURACY RULES:
 2. Absolute Grounding: Answer ONLY from the supplied deterministic verification results and evidence table. Do NOT invent, assume, alter, or infer numbers, dates, or causes.
 3. Sole Source of Truth: The deterministic verification engine is the sole authority for amounts, match statuses, check results, risk scores, discrepancies, and verdicts. Keep your role strictly to explaining these results in plain English.
 4. Financial Reconciliation & Tax Basis: When comparing GRN against PO or Invoice, note that GRN amounts represent pre-tax received values which match pre-tax subtotals, while Invoice/PO gross totals include tax. Do not treat tax differences between GRN subtotal and Invoice gross total as a discrepancy when the pre-tax amounts match and the check passed.
-5. Conflicting User Assumptions: If the user's question contains an assumption that conflicts with the authoritative deterministic verification result (e.g. asking why a clean/verified invoice or bundle was 'flagged' or 'failed' when the deterministic status is VERIFIED/clean with 0 risk score and 0 discrepancies), do NOT accept the assumption. Explicitly correct the premise using the deterministic result (e.g. stating clearly that the invoice was verified clean, not flagged, with 0 risk score) and explain the passing verification evidence.
+5. Conflicting User Assumptions & Clean Status: If the user's question asks why an entity (transaction, invoice, PO, or bundle) was 'flagged', 'failed', 'rejected', or had discrepancies, but the deterministic verification status is VERIFIED / clean with 0 risk score and 0 discrepancies:
+   - You MUST explicitly state in the opening sentence that the item was NOT flagged or failed.
+   - NEVER write that an item "was flagged because all checks passed" or "was flagged due to passing checks". That is a contradiction.
+   - State clearly: The transaction/invoice was NOT flagged. It passed all deterministic verification checks with a risk score of 0/100 and zero discrepancies.
+   - Then provide the supporting clean verification numbers (PO, Invoice, GRN totals in ₹, matched quantities, and passed checks).
 6. Failure / Flagging Reasons: If a bundle or transaction genuinely failed or was flagged with discrepancies, explain the actual retrieved deterministic evidence (e.g. overbilling variance, goods unconfirmed, bank debit mismatch). If no failure reason or discrepancy exists in the retrieved evidence, you must state that clearly.
 7. Zero Speculation: Do NOT use speculation words ("fraud", "unauthorized", "backdated", "approved") unless explicitly stated in the deterministic findings. If evidence is missing or ambiguous, state clearly that it cannot be determined from the available documents.
 8. No Redundant Headers: Do NOT output markdown section headers (like "## Verification Result" or "### Summary"). The UI renders structured tables and badges automatically below your response.
@@ -609,6 +635,16 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
     q_lower = (user_query or "").lower()
     needs_line_items = any(k in q_lower for k in ["line item", "itemized", "items ordered", "items received", "each item", "breakdown of items"])
 
+    # Check deterministic clean status
+    is_clean_verif = False
+    if verification_info:
+        v_checks = verification_info.get("checks") or []
+        v_discs = verification_info.get("discrepancies") or []
+        v_verdict = (verification_info.get("verdict") or "").lower()
+        v_risk = float(verification_info.get("risk_score") or 0.0)
+        v_failed = sum(1 for c in v_checks if (c.get("status") or "").lower() == "fail")
+        is_clean_verif = (v_verdict in ("clean", "verified", "pass") or v_risk == 0) and v_failed == 0 and len(v_discs) == 0
+
     if is_verif and deterministic_verif_report:
         system_prompt = _VERIFICATION_SYSTEM_PROMPT
         extra_context = ""
@@ -620,13 +656,22 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
             if extra_lines:
                 extra_context = f"\n\nRequested Line Items:\n{json.dumps(extra_lines, indent=2)}"
 
+        clean_mandate = ""
+        if is_clean_verif and any(k in q_lower for k in ["flagged", "failed", "why was", "why is", "why were", "issue", "discrepanc", "wrong", "reject", "anomaly"]):
+            clean_mandate = (
+                "\n\nCRITICAL MANDATE: The user's question asks why this was flagged or failed, but the authoritative deterministic verification result is CLEAN (Risk Score: 0/100, 0 discrepancies, all checks passed). "
+                "You MUST begin your response by explicitly stating that the transaction/invoice was NOT flagged. "
+                "Do NOT write 'was flagged because all checks passed' or 'was flagged due to passing checks'. "
+                "State clearly: The item was NOT flagged. All 3-way/4-way verification checks passed clean with zero discrepancies."
+            )
+
         user_prompt = (
             f"User question: {json.dumps(user_query)}\n\n"
             f"Authoritative Deterministic Verification Results (SOURCE OF TRUTH):\n{deterministic_verif_report}{extra_context}\n\n"
             f"Provide a complete, factually grounded answer directly answering the user's question using the authoritative verification findings above. "
             f"State what was verified, exact amounts in ₹, document references, and any discrepancies or failure reasons clearly. "
             f"If the user asks why an item was flagged or failed but all verification checks passed with 0 risk score, explicitly correct the premise and explain the clean verification. "
-            f"If no failure reason or discrepancy exists in the retrieved evidence, state that clearly and do not invent any reasons."
+            f"If no failure reason or discrepancy exists in the retrieved evidence, state that clearly and do not invent any reasons.{clean_mandate}"
         )
 
         # Dynamic token budget based on query requirements
@@ -681,6 +726,7 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
                 )
                 logger.info(f"[QueryAgent] Ollama ({ollama_model}) raw response: {raw[:300]}")
                 cleaned = _clean_answer_text(raw)
+                cleaned = _sanitize_clean_verification_answer(cleaned, is_clean_verif)
                 REFUSAL_PATTERNS = [
                     "not available in the retrieved evidence",
                     "i cannot answer",
@@ -725,6 +771,7 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
                     raw = (msg.get("content") or "").strip()
                     if raw:
                         cleaned = _clean_answer_text(raw)
+                        cleaned = _sanitize_clean_verification_answer(cleaned, is_clean_verif)
                         if cleaned:
                             logger.info("[QueryAgent] Using OpenRouter LLM answer")
                             return cleaned
