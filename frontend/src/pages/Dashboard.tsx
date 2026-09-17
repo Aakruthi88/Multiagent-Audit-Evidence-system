@@ -114,7 +114,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectBundle, onNewUploa
         action={
           onNewUpload && (
             <PrimaryButton icon={Plus} onClick={onNewUpload} id="new-upload-btn">
-              New upload
+              Doc upload
             </PrimaryButton>
           )
         }
@@ -471,7 +471,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectBundle, onNewUploa
               </p>
               {onNewUpload && (
                 <PrimaryButton icon={Plus} onClick={onNewUpload} style={{ padding: "8px 14px", fontSize: 13 }}>
-                  New upload
+                  Doc upload
                 </PrimaryButton>
               )}
             </div>

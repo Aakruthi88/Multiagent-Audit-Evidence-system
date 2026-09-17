@@ -29,8 +29,8 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
   const navItems: { key: TabKey; label: string; icon: any }[] = [
     { key: "home", label: "Home", icon: Home },
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { key: "upload", label: "New upload", icon: UploadCloud },
-    { key: "bundles", label: "Bundles", icon: Layers3 },
+    { key: "upload", label: "Doc upload", icon: UploadCloud },
+    { key: "bundles", label: "Documents", icon: Layers3 },
     { key: "ask", label: "Ask documents", icon: MessageSquareText },
   ];
 
@@ -148,7 +148,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, selecte
             }}
           >
             <FileText size={15} color={activeTab === "detail" ? C.accent : C.textSecondary} />
-            Bundle detail
+            Document details
           </button>
         )}
       </nav>

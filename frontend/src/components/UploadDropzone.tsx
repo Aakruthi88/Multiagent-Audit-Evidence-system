@@ -48,7 +48,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({ onUploadSubmit, 
     <div>
       <PageHeader
         eyebrow="EVIDENCE INTAKE"
-        title="New upload"
+        title="Doc upload"
         description="Attach the four documents required for a deterministic 4-way audit match."
       />
 

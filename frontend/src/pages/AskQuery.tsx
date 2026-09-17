@@ -379,6 +379,15 @@ export const AiAnswerCard: React.FC<{
   );
 };
 
+const getAuthenticatedDocUrl = (url: string): string => {
+  if (!url || url === "#") return "#";
+  const baseUrl = url.startsWith("http") ? url : `http://localhost:8000${url.startsWith("/") ? "" : "/"}${url}`;
+  const token = localStorage.getItem("audit_auth_token");
+  if (!token) return baseUrl;
+  const separator = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${separator}token=${encodeURIComponent(token)}`;
+};
+
 const SourceDocumentsSection: React.FC<{
   files: BundleFile[];
   requiredDocuments?: string[];
@@ -438,7 +447,7 @@ const SourceDocumentsSection: React.FC<{
           }}
         >
           {displayFiles.map((file, idx) => {
-            const fileUrl = file.url.startsWith("http") ? file.url : `http://localhost:8000${file.url}`;
+            const fileUrl = getAuthenticatedDocUrl(file.url);
             return (
               <a
                 key={idx}

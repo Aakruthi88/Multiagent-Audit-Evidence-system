@@ -17,7 +17,7 @@ const AppContent: React.FC = () => {
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
 
   const [signupSuccessNotice, setSignupSuccessNotice] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
+  const [activeTab, setActiveTab] = useState<TabKey>("home");
   const [selectedBundleId, setSelectedBundleId] = useState<string | undefined>(undefined);
 
   const handleUploadSuccess = (bundleId: string) => {
@@ -80,7 +80,7 @@ const AppContent: React.FC = () => {
           />
         ) : (
           <Login
-            onLoginSuccess={() => setActiveTab("dashboard")}
+            onLoginSuccess={() => setActiveTab("home")}
             onNavigateToSignup={() => {
               setSignupSuccessNotice(null);
               setAuthMode("signup");

@@ -49,12 +49,12 @@ export const Bundles: React.FC<BundlesProps> = ({ onSelectBundle, onNewUpload })
     <div>
       <PageHeader
         eyebrow="EVIDENCE PACKAGES"
-        title="Bundles"
-        description="All processed transaction packages and their verification status."
+        title="Documents"
+        description="All processed document packages and their verification status."
         action={
           onNewUpload && (
             <PrimaryButton icon={Plus} onClick={onNewUpload} id="bundles-new-upload-btn">
-              New upload
+              Doc upload
             </PrimaryButton>
           )
         }
@@ -71,7 +71,7 @@ export const Bundles: React.FC<BundlesProps> = ({ onSelectBundle, onNewUpload })
           }}
         >
           <div style={{ fontSize: 16, fontWeight: 800, color: C.text, fontFamily: sans }}>
-            All Evidence Packages ({bundles.length})
+            All Documents ({bundles.length})
           </div>
           <SecondaryButton onClick={fetchBundles} disabled={loading} icon={RefreshCw} id="refresh-all-bundles-btn">
             Refresh
@@ -81,18 +81,18 @@ export const Bundles: React.FC<BundlesProps> = ({ onSelectBundle, onNewUpload })
         {loading ? (
           <div style={{ padding: 48, textAlign: "center", color: C.textSecondary, fontFamily: sans }}>
             <Loader size={24} className="spin" style={{ margin: "0 auto 10px", display: "block", color: C.accent }} />
-            Loading audit bundles...
+            Loading audit documents...
           </div>
         ) : bundles.length === 0 ? (
           <div style={{ padding: 48, textAlign: "center", color: C.textSecondary, fontFamily: sans }}>
             <Layers3 size={40} style={{ margin: "0 auto 12px", opacity: 0.4, color: C.textTertiary }} />
-            <p style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>No audit bundles found.</p>
+            <p style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>No audit documents found.</p>
             <p style={{ margin: "4px 0 16px", fontSize: 13, color: C.textTertiary }}>
-              Upload your first 4-way transaction package to start.
+              Upload your first 4-way document package to start.
             </p>
             {onNewUpload && (
               <PrimaryButton icon={Plus} onClick={onNewUpload}>
-                New upload
+                Doc upload
               </PrimaryButton>
             )}
           </div>

@@ -62,7 +62,7 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
     return (
       <div style={{ padding: 48, textAlign: "center", color: C.textSecondary, fontFamily: sans }}>
         <RefreshCw size={24} className="spin" style={{ margin: "0 auto 10px", display: "block", color: C.accent }} />
-        Loading bundle details...
+        Loading document details...
       </div>
     );
   }
@@ -70,7 +70,7 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
   if (!bundle) {
     return (
       <div style={{ padding: 48, textAlign: "center", color: C.textSecondary, fontFamily: sans }}>
-        Bundle not found.
+        Document package not found.
       </div>
     );
   }
@@ -112,10 +112,10 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
           padding: 0,
         }}
       >
-        <ArrowLeft size={15} /> Back to dashboard
+        <ArrowLeft size={15} /> Back
       </button>
 
-      {/* Bundle Header Card */}
+      {/* Document Package Header Card */}
       <div style={{ ...glass({ padding: 26 }), marginBottom: 22 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
           <div>
@@ -126,7 +126,7 @@ export const BundleDetail: React.FC<BundleDetailProps> = ({ bundleId, onBack }) 
               {bundle.txn_reference}
             </h2>
             <div style={{ fontSize: 12.5, color: C.textTertiary, fontFamily: mono }}>
-              Bundle ID: {bundle.bundle_id}
+              Document Package ID: {bundle.bundle_id}
             </div>
             <div style={{ fontSize: 12.5, color: C.textTertiary, fontFamily: sans, marginTop: 2 }}>
               Created {new Date(bundle.created_at).toLocaleString()}

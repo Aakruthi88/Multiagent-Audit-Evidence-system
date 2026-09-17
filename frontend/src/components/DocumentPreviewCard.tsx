@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { FileText, ChevronDown, ChevronUp } from "lucide-react";
+import { FileText, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { DocumentItem } from "../types";
 import { getDocumentDetail } from "../api/endpoints";
 import { C, sans, mono, glassSoft, StatusBadge } from "../theme";
@@ -25,6 +25,21 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ docume
     invoice: "Vendor Invoice",
     grn: "Goods Received Note (GRN)",
     bank_statement: "Bank Statement / Narration",
+  };
+
+  const getPdfUrl = () => {
+    const rawPath = detail?.file_path || document.file_path;
+    let url = "";
+    if (rawPath && rawPath.startsWith("/api/v1/")) {
+      url = `http://localhost:8000${rawPath}`;
+    } else if (document.bundle_id) {
+      const safeFilename = `${document.doc_type}.pdf`;
+      url = `http://localhost:8000/api/v1/bundles/${document.bundle_id}/files/${safeFilename}`;
+    }
+    if (!url) return "#";
+    const token = localStorage.getItem("audit_auth_token");
+    if (!token) return url;
+    return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
   };
 
   return (
@@ -64,8 +79,39 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ docume
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <StatusBadge status={document.extraction_status} />
+          
+          <a
+            href={getPdfUrl()}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              background: "rgba(91, 99, 232, 0.08)",
+              border: `1px solid rgba(91, 99, 232, 0.25)`,
+              borderRadius: 8,
+              padding: "5px 10px",
+              cursor: "pointer",
+              color: C.accent,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 12,
+              fontFamily: sans,
+              fontWeight: 700,
+              textDecoration: "none",
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(91, 99, 232, 0.18)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(91, 99, 232, 0.08)";
+            }}
+          >
+            <ExternalLink size={13} /> View PDF
+          </a>
+
           <button
             onClick={() => setExpanded(!expanded)}
             style={{
