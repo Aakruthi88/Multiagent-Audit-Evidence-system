@@ -198,45 +198,45 @@ def _format_check_block(c: dict, evidence: dict) -> str:
     if check_type == "po_invoice_total_match":
         inv_tot = _format_amount(inv.get("total_amount") or actual)
         po_tot = _format_amount(po.get("total_amount") or expected)
-        lines.append(f"PO: {po_tot}")
-        lines.append(f"Invoice: {inv_tot}")
+        lines.append(f"PO Gross Total: {po_tot}")
+        lines.append(f"Invoice Gross Total: {inv_tot}")
         if variance and str(variance) not in ("0", "0.0", "0.00", "None"):
             lines.append(f"Difference: {_format_amount(variance)}")
     elif check_type == "po_invoice_ref_match":
-        lines.append(f"PO: {po.get('po_number') or expected or 'N/A'}")
-        lines.append(f"Invoice PO Ref: {inv.get('po_number') or inv.get('purchase_order') or actual or 'N/A'}")
+        lines.append(f"PO Number: {po.get('po_number') or expected or 'N/A'}")
+        lines.append(f"Invoice Stated PO Ref: {inv.get('po_number') or inv.get('purchase_order') or actual or 'N/A'}")
     elif check_type == "po_invoice_vendor_match":
         po_vendor = po.get("vendor_name") or evidence.get("vendor_name") or expected or "N/A"
         inv_vendor = inv.get("vendor_name") or evidence.get("vendor_name") or actual or "N/A"
-        lines.append(f"PO: {po_vendor}")
-        lines.append(f"Invoice: {inv_vendor}")
+        lines.append(f"PO Vendor: {po_vendor}")
+        lines.append(f"Invoice Vendor: {inv_vendor}")
     elif check_type in ("grn_qty_match", "grn_qty_short_shipment", "grn_qty_over_delivery", "grn_qty_zero_received"):
         po_qty = expected if expected is not None else "N/A"
         grn_qty = actual if actual is not None else "N/A"
-        lines.append(f"PO: {po_qty} units")
-        lines.append(f"GRN: {grn_qty} units")
+        lines.append(f"PO Ordered Qty: {po_qty} units")
+        lines.append(f"GRN Received Qty: {grn_qty} units")
         if variance and str(variance) not in ("0", "0.0", "0.00", "None"):
             lines.append(f"Difference: {variance} units")
     elif check_type == "po_grn_amount_match":
         po_sub = _format_amount(po.get("subtotal") or expected)
         grn_tot = _format_amount(grn.get("total_amount") or actual)
-        lines.append(f"PO (Pre-Tax): {po_sub}")
-        lines.append(f"GRN: {grn_tot}")
+        lines.append(f"PO Pre-Tax Subtotal: {po_sub}")
+        lines.append(f"GRN Pre-Tax Total: {grn_tot} (evaluated on pre-tax basis)")
         if variance and str(variance) not in ("0", "0.0", "0.00", "None"):
             lines.append(f"Difference: {_format_amount(variance)}")
     elif check_type == "invoice_grn_amount_match":
         inv_sub = _format_amount(inv.get("subtotal") or expected)
         grn_tot = _format_amount(grn.get("total_amount") or actual)
-        lines.append(f"Invoice (Pre-Tax): {inv_sub}")
-        lines.append(f"GRN: {grn_tot}")
+        lines.append(f"Invoice Pre-Tax Subtotal: {inv_sub}")
+        lines.append(f"GRN Pre-Tax Total: {grn_tot} (evaluated on pre-tax basis)")
         if variance and str(variance) not in ("0", "0.0", "0.00", "None"):
             lines.append(f"Difference: {_format_amount(variance)}")
     elif check_type == "tax_rate_consistency":
-        lines.append(f"PO: {expected}%")
-        lines.append(f"Invoice: {actual}%")
+        lines.append(f"PO Tax Rate: {expected}%")
+        lines.append(f"Invoice Tax Rate: {actual}%")
     elif check_type == "invoice_arithmetic_check":
-        lines.append(f"Subtotal + Tax: {_format_amount(expected)}")
-        lines.append(f"Invoice Stated Total: {_format_amount(actual)}")
+        lines.append(f"Calculated Subtotal + Tax: {_format_amount(expected)}")
+        lines.append(f"Invoice Stated Gross Total: {_format_amount(actual)}")
     elif expected is not None or actual is not None:
         if expected is not None:
             lines.append(f"Expected: {expected}")
@@ -360,7 +360,11 @@ def _format_deterministic_verification_response(evidence: dict, verification_inf
     grn_num = grn.get("grn_number") or "N/A"
 
     inv_total_str = _format_amount(inv.get("total_amount"))
+    inv_subtotal_str = _format_amount(inv.get("subtotal"))
+    inv_tax_str = _format_amount(inv.get("tax_amount"))
     po_total_str = _format_amount(po.get("total_amount") or po.get("subtotal"))
+    po_subtotal_str = _format_amount(po.get("subtotal"))
+    po_tax_str = _format_amount(po.get("tax_amount"))
     grn_total_str = _format_amount(grn.get("total_amount"))
     qty_str = _get_quantity_summary(evidence)
 
@@ -463,9 +467,9 @@ def _format_deterministic_verification_response(evidence: dict, verification_inf
 Overall Status: {overall_status}
 Verdict: {verdict or overall_status}
 Risk Score: {int(risk_score)}/100
-Invoice: {inv_num} (Total: {inv_total_str})
-Purchase Order: {po_num} (Total: {po_total_str})
-GRN: {grn_num} (Total: {grn_total_str})
+Invoice: {inv_num} (Total: {inv_total_str} [Pre-Tax Subtotal: {inv_subtotal_str}, Tax: {inv_tax_str}])
+Purchase Order: {po_num} (Total: {po_total_str} [Pre-Tax Subtotal: {po_subtotal_str}, Tax: {po_tax_str}])
+GRN: {grn_num} (Total: {grn_total_str} [Pre-Tax Received Amount matching PO/Invoice Subtotal])
 Vendor: {vendor}
 Quantity: {qty_str}
 Checks Passed: {passed_count}, Checks Failed: {failed_count}, Warnings: {warning_count}{txn_section}
@@ -485,10 +489,13 @@ Your task is to write a clear, complete, professional natural-language audit exp
 CRITICAL GROUNDING & ACCURACY RULES:
 1. Direct Answer: Answer the user's question directly in the opening sentence. State what was verified, exact document numbers (Invoice #, PO #, GRN #), exact amounts or quantities in ₹, and the verdict or findings clearly.
 2. Absolute Grounding: Answer ONLY from the supplied deterministic verification results and evidence table. Do NOT invent, assume, alter, or infer numbers, dates, or causes.
-3. Failure / Flagging Reasons: If the user asks why a transaction, bundle, or invoice was failed/flagged/rejected, explain the actual retrieved deterministic evidence and verification findings (e.g. amount mismatch between invoice and PO/payment, short shipment, missing document). If the available evidence does not establish any failure reason or discrepancy, you MUST explicitly state that the available evidence does not establish the reason. You must NEVER claim that amounts exceed dates or invent speculative financial causes.
-4. Zero Speculation: Do NOT use speculation words ("fraud", "unauthorized", "backdated", "approved") unless explicitly stated in the deterministic findings. If evidence is missing or ambiguous, state clearly that it cannot be determined from the available documents.
-5. No Redundant Headers: Do NOT output markdown section headers (like "## Verification Result" or "### Summary"). The UI renders structured tables and badges automatically below your response.
-6. Completeness: Include all essential financial details (totals in ₹, subtotal and tax breakdowns, dates, check counts, and specific discrepancies) without artificial brevity or filler text."""
+3. Sole Source of Truth: The deterministic verification engine is the sole authority for amounts, match statuses, check results, risk scores, discrepancies, and verdicts. Keep your role strictly to explaining these results in plain English.
+4. Financial Reconciliation & Tax Basis: When comparing GRN against PO or Invoice, note that GRN amounts represent pre-tax received values which match pre-tax subtotals, while Invoice/PO gross totals include tax. Do not treat tax differences between GRN subtotal and Invoice gross total as a discrepancy when the pre-tax amounts match and the check passed.
+5. Conflicting User Assumptions: If the user's question contains an assumption that conflicts with the authoritative deterministic verification result (e.g. asking why a clean/verified invoice or bundle was 'flagged' or 'failed' when the deterministic status is VERIFIED/clean with 0 risk score and 0 discrepancies), do NOT accept the assumption. Explicitly correct the premise using the deterministic result (e.g. stating clearly that the invoice was verified clean, not flagged, with 0 risk score) and explain the passing verification evidence.
+6. Failure / Flagging Reasons: If a bundle or transaction genuinely failed or was flagged with discrepancies, explain the actual retrieved deterministic evidence (e.g. overbilling variance, goods unconfirmed, bank debit mismatch). If no failure reason or discrepancy exists in the retrieved evidence, you must state that clearly.
+7. Zero Speculation: Do NOT use speculation words ("fraud", "unauthorized", "backdated", "approved") unless explicitly stated in the deterministic findings. If evidence is missing or ambiguous, state clearly that it cannot be determined from the available documents.
+8. No Redundant Headers: Do NOT output markdown section headers (like "## Verification Result" or "### Summary"). The UI renders structured tables and badges automatically below your response.
+9. Completeness: Include all essential financial details (totals in ₹, subtotal and tax breakdowns, dates, check counts, and specific discrepancies) without artificial brevity or filler text."""
 
 
 def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict] = None) -> str:
@@ -586,6 +593,7 @@ def _is_verification_query(user_query: str, plan: Optional[dict], verification_i
 
 def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = None, verification_info: Optional[dict] = None, bundle_id: Optional[str] = None) -> str:
     """Synthesize plain-English QA answer via local Ollama strictly grounded in dynamically prepared evidence & verification results."""
+    synth_start = time.time()
     is_verif = _is_verification_query(user_query, plan, verification_info)
 
     # 1. Dynamic Context Preparation based on Intent and Query Requirements
@@ -617,17 +625,17 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
             f"Authoritative Deterministic Verification Results (SOURCE OF TRUTH):\n{deterministic_verif_report}{extra_context}\n\n"
             f"Provide a complete, factually grounded answer directly answering the user's question using the authoritative verification findings above. "
             f"State what was verified, exact amounts in ₹, document references, and any discrepancies or failure reasons clearly. "
+            f"If the user asks why an item was flagged or failed but all verification checks passed with 0 risk score, explicitly correct the premise and explain the clean verification. "
             f"If no failure reason or discrepancy exists in the retrieved evidence, state that clearly and do not invent any reasons."
         )
 
-        # Dynamic token budget
-        verdict_str = (verification_info.get("verdict") or "").lower()
-        if verdict_str == "clean" and not verification_info.get("discrepancies"):
-            max_tokens = 200
-        elif any(k in q_lower for k in ["full report", "detailed report", "all checks", "audit report"]):
-            max_tokens = 500
+        # Dynamic token budget based on query requirements
+        if any(k in q_lower for k in ["full report", "detailed report", "detailed", "all check", "every check", "audit report", "full audit"]):
+            max_tokens = 1000
+        elif any(k in q_lower for k in ["why was", "why is", "why were", "flagged", "failed", "investigat", "discrepan", "variance", "mismatch", "reconcil", "reason"]):
+            max_tokens = 750
         else:
-            max_tokens = 350
+            max_tokens = 750
     else:
         intent = plan.get("intent", "lookup") if plan else "lookup"
         system_prompt = _build_intent_system_prompt(intent)
@@ -639,6 +647,8 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
             f"State exact document numbers, values in ₹ (with subtotal and tax breakdown if available), dates, and vendor names."
         )
         max_tokens = 200
+
+    logger.info(f"[QueryAgent] Dynamic output budget: {max_tokens} tokens for query: '{user_query}'")
 
     # ── 1. Call Ollama (local qwen2.5:3b) ───────────────────────────────────
     if settings.OLLAMA_HOST:
@@ -657,7 +667,18 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
             client = _get_query_http_client()
             res = client.post(f"{settings.OLLAMA_HOST}/api/generate", json=payload)
             if res.status_code == 200:
-                raw = res.json().get("response", "").strip()
+                resp_data = res.json()
+                raw = resp_data.get("response", "").strip()
+                prompt_chars = len(system_prompt) + len(user_prompt)
+                prompt_tokens = resp_data.get("prompt_eval_count") or (prompt_chars // 4)
+                resp_tokens = resp_data.get("eval_count") or len(raw.split())
+                synth_ms = int((time.time() - synth_start) * 1000)
+                logger.info(
+                    f"[QueryAgent Timing & Tokens] Prompt Chars: {prompt_chars} | "
+                    f"Prompt Tokens: {prompt_tokens} | "
+                    f"Response Tokens: {resp_tokens} | "
+                    f"Synthesis Time: {synth_ms}ms ({synth_ms / 1000:.2f}s)"
+                )
                 logger.info(f"[QueryAgent] Ollama ({ollama_model}) raw response: {raw[:300]}")
                 cleaned = _clean_answer_text(raw)
                 REFUSAL_PATTERNS = [
