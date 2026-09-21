@@ -42,6 +42,7 @@ class BundleState(TypedDict):
     # ── Investigation & reporting ────────────────────────────────────────────────
     investigation_findings: Optional[Dict[str, Any]]
     report: Optional[Dict[str, Any]]
+    answer: Optional[str]
 
     # ── Error accumulation ───────────────────────────────────────────────────────
     errors: List[str]

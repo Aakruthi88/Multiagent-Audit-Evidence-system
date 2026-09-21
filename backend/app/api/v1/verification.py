@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, verify_bundle_access
 from app.db.session import get_db
 from app.models.models import (
-    AuditBundle, VerificationRun, VerificationCheck, Discrepancy, User
+    AuditBundle, VerificationRun, VerificationCheck, Discrepancy, User, Report
 )
 from app.schemas.verification_schemas import (
     VerificationRunOut, VerificationTriggerResponse
@@ -126,9 +126,25 @@ def get_run(
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 def _enrich_run(db: Session, run: VerificationRun) -> VerificationRunOut:
-    """Attach checks and discrepancies to ORM run before serializing."""
+    """Attach checks, discrepancies, and latest generated audit report to ORM run before serializing."""
     checks = db.query(VerificationCheck).filter(VerificationCheck.run_id == run.run_id).all()
     disc = db.query(Discrepancy).filter(Discrepancy.run_id == run.run_id).all()
+
+    report_rec = (
+        db.query(Report)
+        .filter(Report.run_id == run.run_id)
+        .order_by(Report.generated_at.desc())
+        .first()
+    )
+    report_data = report_rec.content_json if report_rec else None
+
+    if not report_data:
+        all_runs = db.query(VerificationRun.run_id).filter(VerificationRun.bundle_id == run.bundle_id).all()
+        run_ids = [r[0] for r in all_runs]
+        if run_ids:
+            latest_rep = db.query(Report).filter(Report.run_id.in_(run_ids)).order_by(Report.generated_at.desc()).first()
+            if latest_rep:
+                report_data = latest_rep.content_json
 
     run_dict = {
         "run_id": run.run_id,
@@ -139,7 +155,8 @@ def _enrich_run(db: Session, run: VerificationRun) -> VerificationRunOut:
         "overall_risk_score": run.overall_risk_score,
         "rules_version": run.rules_version,
         "checks": checks,
-        "discrepancies": disc
+        "discrepancies": disc,
+        "report": report_data,
     }
     return VerificationRunOut(**{k: v for k, v in run_dict.items()})
 

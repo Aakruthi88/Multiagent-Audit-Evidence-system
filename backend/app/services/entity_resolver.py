@@ -291,7 +291,15 @@ def resolve_entities_from_db(
     if not bundle_ids_found:
         # Vendor match
         vendors = db.query(Vendor).all()
-        stop_words = {'pvt', 'ltd', 'inc', 'corp', 'co', 'and', 'was', 'made', 'to', 'payment', 'paid', 'invoice', 'po', 'grn', 'for', 'with', 'the', 'is', 'has', 'been', 'what', 'which', 'show', 'compare', 'does'}
+        stop_words = {
+            'pvt', 'ltd', 'private', 'limited', 'inc', 'corp', 'corporation', 'co', 'company',
+            'solutions', 'technologies', 'technology', 'enterprises', 'enterprise', 'systems', 'system',
+            'services', 'service', 'group', 'holdings', 'holding', 'consulting', 'global', 'india',
+            'international', 'industries', 'industry', 'infotech', 'networks', 'network', 'digital',
+            'tech', 'llc', 'and', 'was', 'made', 'to', 'payment', 'paid', 'invoice', 'po', 'grn',
+            'for', 'with', 'the', 'is', 'has', 'been', 'what', 'which', 'show', 'compare', 'does',
+            'evidence', 'purchase', 'order', 'please', 'details', 'about', 'from'
+        }
         q_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', q_lower)
         q_words = set(q_clean.split()) - stop_words
 
@@ -301,7 +309,7 @@ def resolve_entities_from_db(
                 continue
             v_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', v_name)
             v_no_space = normalize_code(v_name)
-            core_v = v_no_space.replace('pvtltd', '').replace('ltd', '').replace('pvt', '')
+            core_v = v_no_space.replace('pvtltd', '').replace('ltd', '').replace('pvt', '').replace('solutions', '')
 
             is_vendor_match = False
             if core_v and len(core_v) >= 4 and core_v in q_norm:
@@ -339,6 +347,25 @@ def resolve_entities_from_db(
                             "bundle_id": b_id
                         })
                         bundle_ids_found.add(b_id)
+
+        # Check line item descriptions or raw document text if no vendor matched
+        if not bundle_ids_found:
+            words_to_check = [w for w in q_clean.split() if len(w) >= 4 and w not in stop_words]
+            for w in words_to_check:
+                line_matches = db.query(InvoiceLineItem).filter(InvoiceLineItem.description.ilike(f"%{w}%")).all()
+                for lm in line_matches:
+                    inv_match = db.query(Invoice).filter(Invoice.invoice_id == lm.invoice_id).first()
+                    if inv_match and inv_match.bundle_id and is_bundle_authorized(inv_match.bundle_id):
+                        b_id = str(inv_match.bundle_id)
+                        matches.append({
+                            "entity_type": "line_item",
+                            "entity_value": lm.description,
+                            "bundle_id": b_id
+                        })
+                        bundle_ids_found.add(b_id)
+                        break
+                if bundle_ids_found:
+                    break
 
     # ── General Bank / Statement queries without specific ID ──────
     if not bundle_ids_found and any(k in q_lower for k in ["closing balance", "opening balance", "bank balance", "statement balance", "bank statement"]):

@@ -54,7 +54,7 @@ Do NOT answer the question. Return ONLY valid JSON matching this schema:
 
 {
   "intent": "<lookup | payment_lookup | comparison | full_audit>",
-  "bundle_reference": "<string like 'Invoice 200005', 'PO 100005', 'GRN-2026-0005', or null>",
+  "bundle_reference": "<string like 'TXN-2026-817', 'Invoice 200005', 'PO 100005', 'GRN-2026-0005', or null>",
   "required_documents": ["<one or more of: invoice | purchase_order | grn | bank_statement>"],
   "required_fields": ["<field_name1>", "<field_name2>"] or "all",
   "verification_required": <true | false>,
@@ -62,7 +62,12 @@ Do NOT answer the question. Return ONLY valid JSON matching this schema:
 }
 
 CRITICAL RETRIEVAL PLANNING RULES:
-1. "required_documents":
+1. "bundle_reference":
+   - Extract ONLY the specific identifier or entity reference mentioned (e.g. "TXN-2026-817", "Invoice 200005", "PO 100005", "GRN-2026-0005", or vendor name).
+   - If the query is an overview, cross-bundle, or system-wide query with no specific entity (e.g. "show all flagged bundles", "list all transactions", "system status"), set "bundle_reference" to null.
+   - NEVER put the entire question string in "bundle_reference".
+
+2. "required_documents":
    - "invoice": when invoice details (total amount, date, vendor, tax, subtotal) are queried or needed for comparison/audit.
    - "purchase_order": when PO details (items ordered, PO quantity, shipping terms) are queried or needed for comparison/audit.
    - "grn": when goods received / delivery details (qty received, condition, delivery note, GRN number) are queried or needed for comparison/audit.
@@ -70,27 +75,27 @@ CRITICAL RETRIEVAL PLANNING RULES:
    - If comparing specific documents (e.g. invoice vs PO vs GRN), include exactly those documents (e.g. ["invoice", "purchase_order", "grn"]).
    - If full audit report is requested, include all 4: ["invoice", "purchase_order", "grn", "bank_statement"].
 
-2. "verification_required":
+3. "verification_required":
    - Set to TRUE ONLY if the user explicitly asks to verify, compare documents, run 3-way/4-way match, check for discrepancies, or generate an audit report.
-   - Set to FALSE for simple lookups/questions (e.g. "What is the total amount of Invoice 200005?", "How many units were received for GRN-2026-0005?", "What items were ordered in PO 100005?").
+   - Set to FALSE for lookups and questions (e.g. "What is the total amount of Invoice 200005?", "Why was TXN-2026-817 flagged?", "How many units were received for GRN-2026-0005?", "What items were ordered in PO 100005?").
 
-3. "report_required":
+4. "report_required":
    - Set to TRUE ONLY if user explicitly asks to generate an audit report.
 
 EXAMPLES:
+- "Why was TXN-2026-817 flagged?" -> {"intent": "lookup", "bundle_reference": "TXN-2026-817", "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all", "verification_required": false, "report_required": false}
 - "What is the total amount of Invoice 200005?" -> {"intent": "lookup", "bundle_reference": "Invoice 200005", "required_documents": ["invoice"], "required_fields": ["total_amount"], "verification_required": false, "report_required": false}
 - "How many units were received for GRN-2026-0005?" -> {"intent": "lookup", "bundle_reference": "GRN-2026-0005", "required_documents": ["grn"], "required_fields": ["qty_received", "line_items"], "verification_required": false, "report_required": false}
 - "What items were ordered in PO 100005?" -> {"intent": "lookup", "bundle_reference": "PO 100005", "required_documents": ["purchase_order"], "required_fields": ["line_items"], "verification_required": false, "report_required": false}
 - "Show me the key details of TXN-2026-840." -> {"intent": "lookup", "bundle_reference": "TXN-2026-840", "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all", "verification_required": false, "report_required": false}
-- "Show me the key details of TXN-2026-935." -> {"intent": "lookup", "bundle_reference": "TXN-2026-935", "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all", "verification_required": false, "report_required": false}
+- "Show all flagged transactions" -> {"intent": "lookup", "bundle_reference": null, "required_documents": ["invoice"], "required_fields": "all", "verification_required": false, "report_required": false}
 - "Verify invoice 200005 against PO 100005 and GRN-2026-0005" -> {"intent": "comparison", "bundle_reference": "Invoice 200005", "required_documents": ["invoice", "purchase_order", "grn"], "required_fields": "all", "verification_required": true, "report_required": false}
-- "Perform a 3-way match for Invoice 200005" -> {"intent": "comparison", "bundle_reference": "Invoice 200005", "required_documents": ["invoice", "purchase_order", "grn"], "required_fields": "all", "verification_required": true, "report_required": false}
 - "Generate an audit report for Invoice 200005" -> {"intent": "full_audit", "bundle_reference": "Invoice 200005", "required_documents": ["invoice", "purchase_order", "grn", "bank_statement"], "required_fields": "all", "verification_required": true, "report_required": true}
 
 Return ONLY raw JSON."""
 
 
-from app.services.entity_resolver import resolve_entities_from_db
+from app.services.entity_resolver import resolve_entities_from_db, extract_potential_entities
 
 
 def _lookup_bundle_by_query(query: str, allowed_bundle_ids: Optional[List[str]] = None) -> Optional[str]:
@@ -116,7 +121,7 @@ def _get_planner_http_client() -> httpx.Client:
     global _planner_http_client
     if _planner_http_client is None or _planner_http_client.is_closed:
         _planner_http_client = httpx.Client(
-            timeout=httpx.Timeout(2.0, connect=0.8),
+            timeout=httpx.Timeout(20.0, connect=5.0),
             limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
         )
     return _planner_http_client
@@ -138,19 +143,27 @@ def _parse_plan(raw: str) -> Optional[RetrievalPlan]:
 
 def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     """
-    Sub-millisecond deterministic retrieval planner for structured and standard domain queries.
-    Bypasses LLM roundtrips when query intent and required documents are unambiguous.
+    Deterministic retrieval planner for structured domain queries when LLM is unavailable.
     """
     if not user_query or not user_query.strip():
         return None
 
     q = user_query.strip().lower()
+    candidates = extract_potential_entities(user_query)
+    extracted_ref = candidates[0]["raw"] if candidates else None
 
     # 1. Full Audit / Report Generation
-    if any(k in q for k in ["audit report", "audit summary", "generate report", "generate an audit", "create audit report", "full audit", "executive summary"]):
+    if any(k in q for k in [
+        "audit report", "audit summary", "generate report", "generate an audit",
+        "generate audit", "create audit report", "create report", "full audit",
+        "executive summary", "give me a report", "give me an audit report",
+        "produce report", "produce audit report", "show audit report",
+        "view audit report", "show report", "report for", "report on",
+        "run audit report", "audit report for", "generate a report", "generate report for"
+    ]):
         return RetrievalPlan(
             intent="full_audit",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=["invoice", "purchase_order", "grn", "bank_statement"],
             required_fields="all",
             verification_required=True,
@@ -161,7 +174,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     if any(k in q for k in ["failed", "flagged", "why was", "why is", "issue", "problem", "discrepanc", "mismatch", "variance", "exception", "error", "investigat"]):
         return RetrievalPlan(
             intent="investigation",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=["invoice", "bank_statement", "purchase_order", "grn"],
             required_fields="all",
             verification_required=True,
@@ -182,7 +195,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
 
         return RetrievalPlan(
             intent="comparison",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=list(set(req_docs)),
             required_fields="all",
             verification_required=True,
@@ -193,7 +206,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     if any(k in q for k in ["paid", "payment", "bank statement", "statement", "debit", "credit", "bank ref", "account balance", "fully paid", "settled"]):
         return RetrievalPlan(
             intent="payment_lookup",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=["invoice", "bank_statement"],
             required_fields="all",
             verification_required=True,
@@ -204,7 +217,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     if any(k in q for k in ["grn", "goods received", "delivery note", "quantity received", "units received", "received condition"]):
         return RetrievalPlan(
             intent="lookup",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=["grn"],
             required_fields=["qty_received", "line_items", "delivery_note_number", "grn_number", "received_condition"],
             verification_required=False,
@@ -215,7 +228,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     if any(k in q for k in ["purchase order", "ordered", "po number", "po items", "po amount"]) and not ("invoice" in q or "inv" in q):
         return RetrievalPlan(
             intent="lookup",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=["purchase_order"],
             required_fields=["line_items", "total_amount", "po_number", "subtotal", "tax_amount"],
             verification_required=False,
@@ -226,7 +239,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     if any(k in q for k in ["invoice", "inv-", "inv ", "tax invoice", "total amount", "subtotal", "tax amount", "invoice date", "due date"]):
         return RetrievalPlan(
             intent="lookup",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=["invoice"],
             required_fields=["total_amount", "subtotal", "tax_amount", "invoice_number", "vendor_name", "line_items", "due_date", "invoice_date"],
             verification_required=False,
@@ -237,7 +250,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     if any(k in q for k in ["key details", "details of", "show me details", "summary of", "details for", "txn-", "transaction details"]) and not any(k in q for k in ["failed", "flagged", "why was", "why is", "issue", "verify", "compare"]):
         return RetrievalPlan(
             intent="lookup",
-            bundle_reference=user_query,
+            bundle_reference=extracted_ref,
             required_documents=["invoice", "purchase_order", "grn", "bank_statement"],
             required_fields="all",
             verification_required=False,
@@ -248,7 +261,7 @@ def _fast_path_plan(user_query: str) -> Optional[RetrievalPlan]:
     if any(k in q for k in ["show all", "list all", "all bundles", "overview", "all verified", "all invoices", "system status", "health"]):
         return RetrievalPlan(
             intent="lookup",
-            bundle_reference=user_query,
+            bundle_reference=None,
             required_documents=["invoice"],
             required_fields="all",
             verification_required=False,
@@ -326,6 +339,8 @@ def _call_planner_llm(user_query: str) -> Optional[RetrievalPlan]:
 def _heuristic_fallback_plan(user_query: str) -> RetrievalPlan:
     """Fallback planner ONLY when LLM is offline or fails."""
     q = user_query.lower()
+    candidates = extract_potential_entities(user_query)
+    extracted_ref = candidates[0]["raw"] if candidates else None
     req_docs = []
     verif = False
     rep = False
@@ -362,7 +377,7 @@ def _heuristic_fallback_plan(user_query: str) -> RetrievalPlan:
 
     return RetrievalPlan(
         intent=intent,
-        bundle_reference=user_query,
+        bundle_reference=extracted_ref,
         required_documents=list(set(req_docs)),
         required_fields="all",
         verification_required=verif,
@@ -394,16 +409,13 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
 
     logger.info(f"[IntentRouterAgent] Analyzing query: '{user_query}'")
 
-    plan = _fast_path_plan(user_query)
+    # Primary dynamic intent interpreter: Ollama LLM
+    plan = _call_planner_llm(user_query)
     if plan:
-        logger.info(f"[IntentRouterAgent] High-speed deterministic plan created: intent={plan.intent}")
+        logger.info(f"[IntentRouterAgent] Dynamic LLM plan created: intent={plan.intent}, bundle_reference={plan.bundle_reference}")
     else:
-        plan = _call_planner_llm(user_query)
-        if not plan:
-            logger.warning("[IntentRouterAgent] LLM planner unavailable - using heuristic fallback plan")
-            plan = _heuristic_fallback_plan(user_query)
-        else:
-            logger.info(f"[IntentRouterAgent] LLM plan adopted directly without heuristic override")
+        logger.warning("[IntentRouterAgent] LLM planner unavailable - using heuristic fallback plan")
+        plan = _fast_path_plan(user_query) or _heuristic_fallback_plan(user_query)
 
     # Canonical rule: Any audit report, comparison, or verification requires all 4 documents
     if plan.report_required or plan.verification_required or plan.intent in ("full_audit", "comparison", "verification"):
@@ -421,6 +433,11 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
 
     try:
         resolution = resolve_entities_from_db(db, user_query, allowed_bundle_ids=authorized_bundle_ids)
+        if not resolution.get("resolved") and plan.bundle_reference and plan.bundle_reference.strip() != user_query.strip():
+            ref_res = resolve_entities_from_db(db, plan.bundle_reference, allowed_bundle_ids=authorized_bundle_ids)
+            if ref_res.get("resolved"):
+                resolution = ref_res
+
         if resolution.get("resolved"):
             resolved_bid = resolution.get("bundle_id")
             matches = resolution.get("matches", [])
@@ -435,7 +452,9 @@ def intent_router_node(state: BundleState) -> Dict[str, Any]:
 
     logger.info(f"[IntentRouterAgent] Resolved bundle_id: {resolved_bid}, matches: {matches}")
 
-    if resolved_bid and (plan.report_required or plan.verification_required):
+    if resolved_bid and plan.report_required:
+        action = "regenerate_report"
+    elif resolved_bid and plan.verification_required:
         action = "reverify"
     else:
         action = "status_query"

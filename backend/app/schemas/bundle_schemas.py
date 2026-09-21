@@ -35,10 +35,14 @@ class BundleDetailResponse(BaseModel):
     bundle_id: UUID
     txn_reference: str
     status: str
+    overall_status: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     documents: List[DocumentResponse] = []
     extracted_summary: Optional[Dict[str, Any]] = None
+    latest_report: Optional[Dict[str, Any]] = None
+    vendor_name: Optional[str] = None
+    risk_score: Optional[float] = None
 
     class Config:
         from_attributes = True

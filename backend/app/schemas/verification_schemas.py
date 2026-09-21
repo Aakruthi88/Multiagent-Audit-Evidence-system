@@ -1,4 +1,4 @@
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from decimal import Decimal
 from datetime import datetime
 from pydantic import BaseModel, UUID4
@@ -39,6 +39,7 @@ class VerificationRunOut(BaseModel):
     rules_version: str
     checks: List[VerificationCheckOut]
     discrepancies: List[DiscrepancyOut]
+    report: Optional[Dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
 

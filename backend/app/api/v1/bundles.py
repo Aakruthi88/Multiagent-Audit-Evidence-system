@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.models import (
     AuditBundle, Document, PurchaseOrder, Invoice, GRN, BankStatement,
-    AgentExecutionLog, User, VerificationRun, VerificationCheck, Discrepancy
+    AgentExecutionLog, User, VerificationRun, VerificationCheck, Discrepancy, Report
 )
 from app.schemas.bundle_schemas import (
     BundleCreateResponse, BundleDetailResponse, DocumentResponse, AgentLogResponse
@@ -108,6 +108,108 @@ def create_bundle(
     return bundle
 
 
+def _enrich_bundle(bundle: AuditBundle, db: Session) -> dict:
+    """Enrich an AuditBundle model with vendor_name, extracted_summary, risk_score, overall_status, and safe file URLs."""
+    extracted_summary = {}
+    vendor_name = None
+
+    # Check Invoice
+    inv = db.query(Invoice).filter(Invoice.bundle_id == bundle.bundle_id).first()
+    if inv:
+        extracted_summary["invoice"] = {
+            "invoice_number": inv.invoice_number,
+            "total_amount": float(inv.total_amount) if inv.total_amount is not None else 0.0
+        }
+        if inv.vendor:
+            vendor_name = inv.vendor.name_raw or inv.vendor.name_normalized
+
+    # Check Purchase Order
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.bundle_id == bundle.bundle_id).first()
+    if po:
+        extracted_summary["purchase_order"] = {
+            "po_number": po.po_number,
+            "total_amount": float(po.total_amount) if po.total_amount is not None else 0.0
+        }
+        if not vendor_name and po.vendor:
+            vendor_name = po.vendor.name_raw or po.vendor.name_normalized
+
+    # Check GRN
+    grn = db.query(GRN).filter(GRN.bundle_id == bundle.bundle_id).first()
+    if grn:
+        extracted_summary["grn"] = {
+            "grn_number": grn.grn_number,
+            "total_amount": float(grn.total_amount) if grn.total_amount is not None else 0.0
+        }
+        if not vendor_name and grn.vendor:
+            vendor_name = grn.vendor.name_raw or grn.vendor.name_normalized
+
+    # Check Bank Statement
+    bs = db.query(BankStatement).filter(BankStatement.bundle_id == bundle.bundle_id).first()
+    if bs:
+        extracted_summary["bank_statement"] = {"account_number": bs.account_number}
+
+    if vendor_name:
+        extracted_summary["vendor_name"] = vendor_name
+
+    # Fetch latest verification run for overall status and risk score
+    latest_run = (
+        db.query(VerificationRun)
+        .filter(VerificationRun.bundle_id == bundle.bundle_id)
+        .order_by(VerificationRun.started_at.desc())
+        .first()
+    )
+
+    risk_score = None
+    overall_status = None
+    latest_report = None
+
+    if latest_run:
+        overall_status = latest_run.overall_status
+        if latest_run.overall_risk_score is not None:
+            risk_score = float(latest_run.overall_risk_score)
+
+        report_row = (
+            db.query(Report)
+            .filter(Report.run_id == latest_run.run_id)
+            .order_by(Report.generated_at.desc())
+            .first()
+        )
+        if report_row:
+            latest_report = report_row.content_json
+
+    # Format documents with relative API URLs
+    docs_formatted = []
+    for doc in bundle.documents:
+        safe_fname = Path(doc.file_path).name if doc.file_path else f"{doc.doc_type}.pdf"
+        docs_formatted.append(
+            DocumentResponse(
+                document_id=doc.document_id,
+                bundle_id=doc.bundle_id,
+                doc_type=doc.doc_type,
+                file_path=f"/api/v1/bundles/{doc.bundle_id}/files/{safe_fname}",
+                file_hash=doc.file_hash,
+                extraction_status=doc.extraction_status,
+                extraction_confidence=doc.extraction_confidence,
+                extraction_model=doc.extraction_model,
+                uploaded_at=doc.uploaded_at
+            )
+        )
+
+    return {
+        "bundle_id": bundle.bundle_id,
+        "txn_reference": bundle.txn_reference,
+        "status": bundle.status,
+        "overall_status": overall_status or bundle.status,
+        "created_at": bundle.created_at,
+        "updated_at": bundle.updated_at,
+        "documents": docs_formatted,
+        "extracted_summary": extracted_summary,
+        "latest_report": latest_report,
+        "vendor_name": vendor_name,
+        "risk_score": risk_score,
+    }
+
+
 @router.get("", response_model=List[BundleDetailResponse])
 def list_bundles(
     skip: int = 0,
@@ -116,7 +218,7 @@ def list_bundles(
     db: Session = Depends(get_db)
 ):
     """
-    GET /api/v1/bundles - List audit bundles.
+    GET /api/v1/bundles - List audit bundles with enriched vendor, risk, and status details.
     Client Isolation: Auditors only see bundles they uploaded (or unassigned demo bundles).
     Admin role sees all bundles org-wide.
     """
@@ -128,7 +230,7 @@ def list_bundles(
         )
 
     bundles = q.order_by(AuditBundle.created_at.desc()).offset(skip).limit(limit).all()
-    return bundles
+    return [_enrich_bundle(b, db) for b in bundles]
 
 
 @router.get("/metrics/impact")
@@ -140,6 +242,7 @@ def get_business_impact_metrics(
     GET /api/v1/bundles/metrics/impact
     Calculates Business Impact & ROI metrics based strictly on REAL database records.
     Scopes calculations by user role (Admin: all bundles; Auditor: user's bundles + demo).
+    Ensures reverified bundles do not double-count verification checks.
     """
     user_role = (current_user.role or "auditor").lower().strip()
     bundle_q = db.query(AuditBundle)
@@ -148,7 +251,6 @@ def get_business_impact_metrics(
             (AuditBundle.uploaded_by == current_user.user_id) | (AuditBundle.uploaded_by == None)
         )
 
-    
     bundles = bundle_q.all()
     bundle_ids = [b.bundle_id for b in bundles]
 
@@ -160,7 +262,11 @@ def get_business_impact_metrics(
     if not bundle_ids:
         return {
             "total_bundles_audited": 0,
+            "verified_bundles": 0,
+            "flagged_bundles": 0,
+            "incomplete_bundles": 0,
             "total_documents_processed": 0,
+            "extracted_documents": 0,
             "total_verification_checks": 0,
             "checks_passed": 0,
             "checks_failed": 0,
@@ -183,15 +289,23 @@ def get_business_impact_metrics(
     total_docs = len(docs)
     extracted_docs = sum(1 for d in docs if d.extraction_status == "success")
 
-    # Verification runs and checks
-    runs = db.query(VerificationRun).filter(VerificationRun.bundle_id.in_(bundle_ids)).all()
-    run_ids = [r.run_id for r in runs]
+    # Select only the latest VerificationRun per bundle to avoid double counting
+    latest_run_ids = []
+    for bid in bundle_ids:
+        latest_run = (
+            db.query(VerificationRun)
+            .filter(VerificationRun.bundle_id == bid)
+            .order_by(VerificationRun.started_at.desc())
+            .first()
+        )
+        if latest_run:
+            latest_run_ids.append(latest_run.run_id)
 
     checks = []
     discrepancies = []
-    if run_ids:
-        checks = db.query(VerificationCheck).filter(VerificationCheck.run_id.in_(run_ids)).all()
-        discrepancies = db.query(Discrepancy).filter(Discrepancy.run_id.in_(run_ids)).all()
+    if latest_run_ids:
+        checks = db.query(VerificationCheck).filter(VerificationCheck.run_id.in_(latest_run_ids)).all()
+        discrepancies = db.query(Discrepancy).filter(Discrepancy.run_id.in_(latest_run_ids)).all()
 
     total_checks = len(checks)
     checks_passed = sum(1 for c in checks if c.status == "pass")
@@ -249,32 +363,8 @@ def get_bundle(
     bundle: AuditBundle = Depends(verify_bundle_access),
     db: Session = Depends(get_db)
 ):
-    """GET /api/v1/bundles/{bundle_id} - Fetch details of a specific authorized bundle."""
-    # Compile extracted summary if available
-    extracted_summary = {}
-    po = db.query(PurchaseOrder).filter(PurchaseOrder.bundle_id == bundle.bundle_id).first()
-    if po:
-        extracted_summary["purchase_order"] = {"po_number": po.po_number, "total_amount": float(po.total_amount)}
-    inv = db.query(Invoice).filter(Invoice.bundle_id == bundle.bundle_id).first()
-    if inv:
-        extracted_summary["invoice"] = {"invoice_number": inv.invoice_number, "total_amount": float(inv.total_amount)}
-    grn = db.query(GRN).filter(GRN.bundle_id == bundle.bundle_id).first()
-    if grn:
-        extracted_summary["grn"] = {"grn_number": grn.grn_number, "total_amount": float(grn.total_amount)}
-    bs = db.query(BankStatement).filter(BankStatement.bundle_id == bundle.bundle_id).first()
-    if bs:
-        extracted_summary["bank_statement"] = {"account_number": bs.account_number}
-
-    res_dict = {
-        "bundle_id": bundle.bundle_id,
-        "txn_reference": bundle.txn_reference,
-        "status": bundle.status,
-        "created_at": bundle.created_at,
-        "updated_at": bundle.updated_at,
-        "documents": bundle.documents,
-        "extracted_summary": extracted_summary
-    }
-    return res_dict
+    """GET /api/v1/bundles/{bundle_id} - Fetch enriched details of a specific authorized bundle."""
+    return _enrich_bundle(bundle, db)
 
 
 @router.get("/{bundle_id}/status")
@@ -410,12 +500,13 @@ def list_bundle_files(
 def get_bundle_file(
     bundle_id: UUID,
     filename: str,
-    bundle: AuditBundle = Depends(verify_bundle_access)
+    bundle: AuditBundle = Depends(verify_bundle_access),
+    db: Session = Depends(get_db)
 ):
     """
     GET /api/v1/bundles/{bundle_id}/files/{filename}
     Safely serves the existing PDF file from storage/bundles/{bundle_id}/.
-    Enforces authorization and strict path traversal protection.
+    Enforces authorization, strict path traversal protection, and candidate resolution.
     """
     # Strict filename validation
     if not filename or ".." in filename or "/" in filename or "\\" in filename:
@@ -433,16 +524,52 @@ def get_bundle_file(
     bundle_dir = (settings.STORAGE_DIR / "bundles" / str(bundle.bundle_id)).resolve()
     target_file = (bundle_dir / filename).resolve()
 
-    # Verify path containment
-    if not str(target_file).startswith(str(bundle_dir)) or not target_file.is_file():
-        raise HTTPException(status_code=404, detail="Requested document file not found")
+    # 1. Direct file match in bundle directory
+    if str(target_file).startswith(str(bundle_dir)) and target_file.is_file():
+        return FileResponse(
+            path=str(target_file),
+            media_type="application/pdf",
+            filename=target_file.name,
+            content_disposition_type="inline"
+        )
 
-    return FileResponse(
-        path=str(target_file),
-        media_type="application/pdf",
-        filename=filename,
-        content_disposition_type="inline"
-    )
+    # 2. Candidate resolution: search bundle_dir for matching doc_type prefix or partial filename
+    base_name = filename[:-4] if filename.lower().endswith(".pdf") else filename
+    if bundle_dir.exists() and bundle_dir.is_dir():
+        for candidate in bundle_dir.glob("*.pdf"):
+            cand_name = candidate.name.lower()
+            base_lower = base_name.lower()
+            if (
+                cand_name.startswith(f"{base_lower}_")
+                or cand_name.endswith(f"_{base_lower}.pdf")
+                or cand_name == f"{base_lower}.pdf"
+                or base_lower in cand_name
+            ):
+                cand_resolved = candidate.resolve()
+                if str(cand_resolved).startswith(str(bundle_dir)) and cand_resolved.is_file():
+                    return FileResponse(
+                        path=str(cand_resolved),
+                        media_type="application/pdf",
+                        filename=cand_resolved.name,
+                        content_disposition_type="inline"
+                    )
+
+    # 3. Fallback: check Document table for this bundle
+    doc_record = db.query(Document).filter(
+        Document.bundle_id == bundle.bundle_id,
+        (Document.doc_type == base_name) | (Document.doc_type == filename)
+    ).first()
+    if doc_record and doc_record.file_path:
+        doc_path = Path(doc_record.file_path).resolve()
+        if doc_path.is_file() and str(doc_path).startswith(str(settings.STORAGE_DIR.resolve())):
+            return FileResponse(
+                path=str(doc_path),
+                media_type="application/pdf",
+                filename=doc_path.name,
+                content_disposition_type="inline"
+            )
+
+    raise HTTPException(status_code=404, detail="Requested document file not found")
 
 
 @router.get("/{bundle_id}/export-workpaper")

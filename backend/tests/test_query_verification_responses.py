@@ -95,7 +95,7 @@ def test_format_deterministic_verification_response_structure():
         ]
     }
 
-    resp = _format_deterministic_verification_response(evidence, verification_info, "bundle-123")
+    resp = _format_deterministic_verification_response(evidence, verification_info, "bundle-123", user_query="all checks")
 
     # Verify all required sections and data points exist
     assert "Deterministic Verification Findings (SOURCE OF TRUTH)" in resp
@@ -104,22 +104,22 @@ def test_format_deterministic_verification_response_structure():
     assert "Purchase Order: PO-100005" in resp
     assert "GRN: GRN-2026-0005" in resp
     assert "Vendor: Oak PLC Traders" in resp
-    assert "Invoice: INV-200005 (Total: ₹637,200)" in resp
-    assert "Purchase Order: PO-100005 (Total: ₹637,200)" in resp
-    assert "GRN: GRN-2026-0005 (Total: ₹540,000)" in resp
+    assert "Invoice: INV-200005 (Total: ₹637,200" in resp
+    assert "Purchase Order: PO-100005 (Total: ₹637,200" in resp
+    assert "GRN: GRN-2026-0005 (Total: ₹540,000" in resp
     assert "Checks Passed: 2" in resp
     assert "Checks Failed: 1" in resp
     assert "Risk Score: 30/100" in resp
 
     assert "### Relevant Checks:" in resp
     assert "PO ↔ Invoice Amount Match" in resp
-    assert "PO: ₹637,200" in resp
-    assert "Invoice: ₹637,200" in resp
+    assert "PO Gross Total: ₹637,200" in resp
+    assert "Invoice Gross Total: ₹637,200" in resp
     assert "Result: PASS" in resp
 
     assert "Short Shipment (GRN Qty < PO Qty)" in resp
-    assert "PO: 19 units" in resp
-    assert "GRN: 17 units" in resp
+    assert "PO Ordered Qty: 19 units" in resp
+    assert "GRN Received Qty: 17 units" in resp
     assert "Difference: 2 units" in resp
     assert "Result: FAIL" in resp
 

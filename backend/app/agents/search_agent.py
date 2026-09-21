@@ -90,11 +90,30 @@ LINE_ITEM_FIELD_NAMES = {
 
 CORE_IDENTITY_FIELDS = {
     "invoice_number", "po_number", "grn_number", "account_number", "vendor_name",
+    "customer_name", "bill_to", "buyer_name",
     "invoice_date", "due_date", "po_date", "grn_date", "statement_date",
     "delivery_note_number", "total_amount", "subtotal", "tax_amount",
     "purchase_order", "po_ref_raw", "payment_status", "payment_date",
     "payment_amount", "bank_reference", "received_condition"
 }
+
+
+def _extract_customer_from_doc_text(raw_text: Optional[str]) -> Optional[str]:
+    """Extract customer / Bill To organization name from document raw text."""
+    if not raw_text:
+        return None
+    lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+    for i, line in enumerate(lines):
+        if line.upper() in ("BILL TO", "BILLED TO", "CUSTOMER:", "BILL TO:", "BUYER:", "CUSTOMER NAME:"):
+            for j in range(i + 1, min(i + 4, len(lines))):
+                cand = lines[j]
+                if any(cand.upper().startswith(p) for p in ["PHONE:", "TEL:", "EMAIL:", "ADDRESS:", "DESCRIPTION", "ITEM"]):
+                    continue
+                if any(k in cand.upper() for k in ["PVT LTD", "LTD", "LIMITED", "INC", "CORP", "LLC", "SOLUTIONS", "ENTERPRISES", "SYSTEMS", "TECHNOLOGIES"]):
+                    return cand
+            if i + 1 < len(lines):
+                return lines[i + 1]
+    return None
 
 
 def _filter_document_fields(
@@ -170,6 +189,7 @@ def _fetch_bundle_evidence(db: Session, bundle_id: str, plan: Optional[Dict[str,
     evidence = {
         "bundle_id": bundle_id,
         "vendor_name": None,
+        "customer_name": None,
         "invoice": None,
         "purchase_order": None,
         "grn": None,
@@ -184,6 +204,13 @@ def _fetch_bundle_evidence(db: Session, bundle_id: str, plan: Optional[Dict[str,
             v = db.query(Vendor).filter(Vendor.vendor_id == inv.vendor_id).first()
             vname = v.name_normalized if v else None
             evidence["vendor_name"] = vname
+
+    # Extract customer name / Bill To from document raw text
+    inv_doc = db.query(Document).filter(Document.bundle_id == bundle_id, Document.doc_type == "invoice").first()
+    po_doc = db.query(Document).filter(Document.bundle_id == bundle_id, Document.doc_type == "purchase_order").first()
+    cname = _extract_customer_from_doc_text(inv_doc.raw_text if inv_doc else None) or _extract_customer_from_doc_text(po_doc.raw_text if po_doc else None)
+    if cname:
+        evidence["customer_name"] = cname
 
     # 1. Fetch Invoice if requested
     if "invoice" in req_docs and inv:
@@ -208,6 +235,8 @@ def _fetch_bundle_evidence(db: Session, bundle_id: str, plan: Optional[Dict[str,
             "subtotal": float(inv.subtotal) if inv.subtotal is not None else None,
             "tax_amount": float(inv.tax_amount) if inv.tax_amount is not None else None,
             "vendor_name": vname,
+            "customer_name": cname,
+            "bill_to": cname,
             "purchase_order": po_ref,
             "po_number": po_ref,
         }
@@ -234,6 +263,9 @@ def _fetch_bundle_evidence(db: Session, bundle_id: str, plan: Optional[Dict[str,
                 "total_amount": float(po.total_amount) if po.total_amount is not None else None,
                 "subtotal": float(po.subtotal) if po.subtotal is not None else None,
                 "tax_amount": float(po.tax_amount) if po.tax_amount is not None else None,
+                "vendor_name": vname,
+                "customer_name": cname,
+                "buyer_name": cname,
             }
             evidence["purchase_order"] = _filter_document_fields(raw_header, raw_line_items, required_fields)
 

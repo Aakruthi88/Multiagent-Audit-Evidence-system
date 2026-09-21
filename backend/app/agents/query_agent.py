@@ -75,7 +75,7 @@ def _clean_answer_text(raw_text: str) -> str:
 
 
 def _sanitize_clean_verification_answer(text: str, is_clean_verif: bool) -> str:
-    """Correct any oxymoronic LLM phrasing where a clean item is said to be 'flagged because all checks passed'."""
+    """Correct any oxymoronic LLM phrasing where a clean item is said to be 'flagged because all checks passed' or hallucinating a reason."""
     if not text or not is_clean_verif:
         return text
 
@@ -93,6 +93,12 @@ def _sanitize_clean_verification_answer(text: str, is_clean_verif: bool) -> str:
         r"(?i)\b((?:TXN|INV|PO|GRN|Invoice|Transaction|Bundle)?\s*[-A-Z0-9_]*\s*)was flagged because (?:it was|the transaction was|the invoice was) verified clean",
     )
     text = pattern3.sub(r"\1was NOT flagged; it was verified clean", text)
+
+    pattern4 = re.compile(
+        r"(?i)\b((?:TXN|INV|PO|GRN|Invoice|Transaction|Bundle)?\s*[-A-Z0-9_]*\s*)was flagged because\b.*?(?=\.|$)",
+    )
+    text = pattern4.sub(r"\1was NOT flagged. All 3-way and 4-way matching checks passed clean with zero discrepancies (Risk Score: 0/100).", text)
+
     return text
 
 
@@ -109,14 +115,17 @@ def _filter_evidence_for_prompt(user_query: str, evidence: dict, plan: Optional[
     grn = evidence.get("grn") or {}
     bank = evidence.get("bank_statement") or {}
     vendor = evidence.get("vendor_name")
+    customer = evidence.get("customer_name") or inv.get("customer_name") or po.get("customer_name") or inv.get("bill_to")
 
     filtered = {}
     if vendor:
         filtered["vendor_name"] = vendor
+    if customer:
+        filtered["customer_name"] = customer
 
     if "invoice" in req_set and inv:
         doc_inv = {"invoice_number": inv.get("invoice_number")}
-        for f in ("subtotal", "tax_amount", "total_amount", "invoice_date", "due_date", "purchase_order", "po_number", "vendor_name"):
+        for f in ("subtotal", "tax_amount", "total_amount", "invoice_date", "due_date", "purchase_order", "po_number", "vendor_name", "customer_name", "bill_to"):
             if inv.get(f) is not None:
                 doc_inv[f] = inv.get(f)
         if inv.get("line_items"):
@@ -125,7 +134,7 @@ def _filter_evidence_for_prompt(user_query: str, evidence: dict, plan: Optional[
 
     if "purchase_order" in req_set and po:
         doc_po = {"po_number": po.get("po_number")}
-        for f in ("subtotal", "tax_amount", "total_amount", "po_date", "vendor_name"):
+        for f in ("subtotal", "tax_amount", "total_amount", "po_date", "vendor_name", "customer_name", "buyer_name"):
             if po.get(f) is not None:
                 doc_po[f] = po.get(f)
         if po.get("line_items"):
@@ -524,14 +533,281 @@ CRITICAL GROUNDING & ACCURACY RULES:
 9. Completeness: Include all essential financial details (totals in ₹, subtotal and tax breakdowns, dates, check counts, and specific discrepancies) without artificial brevity or filler text."""
 
 
-def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict] = None) -> str:
+def _normalize_vendor_str(v: Optional[str]) -> str:
+    """Normalize vendor name for robust matching by stripping corporate suffixes and non-alphanumeric chars."""
+    if not v:
+        return ""
+    s = str(v).lower()
+    s = re.sub(r'\b(?:pvt|ltd|private|limited|inc|corp|corporation|llc|co|company|enterprises|technologies|solutions|group|holdings)\b', '', s)
+    s = re.sub(r'[^a-z0-9]', '', s)
+    return s.strip()
+
+
+def _are_vendors_matching(v_req: Optional[str], v_act: Optional[str]) -> bool:
+    """Check if requested vendor name matches the actual vendor in retrieved evidence."""
+    if not v_req or not v_act:
+        return True
+    norm_req = _normalize_vendor_str(v_req)
+    norm_act = _normalize_vendor_str(v_act)
+    if not norm_req or not norm_act:
+        return True
+    if norm_req in norm_act or norm_act in norm_req:
+        return True
+    # Token overlap check
+    stop_tokens = {"pvt", "ltd", "private", "limited", "inc", "corp", "company", "and", "the", "for", "with", "from"}
+    words_req = set(re.findall(r'[a-z0-9]{3,}', str(v_req).lower())) - stop_tokens
+    words_act = set(re.findall(r'[a-z0-9]{3,}', str(v_act).lower())) - stop_tokens
+    if words_req and words_act and bool(words_req & words_act):
+        return True
+    return False
+
+
+def _extract_requested_vendor(user_query: str) -> Optional[str]:
+    """
+    Extract explicitly requested vendor name from the user query.
+    Handles patterns like:
+      - from <Vendor>
+      - by <Vendor>
+      - vendor: <Vendor> / vendor <Vendor>
+      - supplier <Vendor>
+      - corporate names ending in Ltd, Pvt Ltd, Inc, Corp, LLC, Technologies, etc.
+    """
+    if not user_query:
+        return None
+    q = user_query.strip()
+
+    stop_words = {
+        "invoice", "po", "purchase order", "grn", "bank", "statement", "the", "a", "an",
+        "our", "my", "this", "that", "these", "those", "records", "evidence", "system",
+        "database", "documents", "files", "all", "each", "any", "which", "what", "where",
+        "when", "how", "details", "data", "laptop", "laptops", "purchase", "order", "delivery", "us"
+    }
+
+    # 1. Look for explicit "from/by/vendor/supplier/seller <Name>"
+    patterns = [
+        r'(?i)\b(?:from|by|vendor\s*[:\-]?|supplier\s*[:\-]?|seller\s*[:\-]?|purchased?\s+from|bought\s+from|issued\s+by)\s+([A-Za-z0-9&.,\'\-\s]+?)(?:\s+(?:for\s+|dated\s+|with\s+|on\s+|in\s+|against\s+|where\s+|bundle\s+|txn\s+|po\s+|inv\s+|invoice\s+|purchase\s+|to\b)|\?|\.|$|\n)',
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, q)
+        if m:
+            cand = m.group(1).strip().strip(",.-")
+            # Remove trailing clause markers
+            cand = re.sub(r'(?i)\s+(?:for\s+|dated\s+|with\s+|on\s+|in\s+|where\s+|bundle\s+|txn\s+|po\s+|inv\s+|invoice\s+|purchase\s+).*$', '', cand).strip()
+            if cand and cand.lower() not in stop_words and len(cand) >= 2:
+                if not re.match(r'^(?:INV|PO|GRN|TXN|DN)?[-_\s]?\d+$', cand, re.I) and not re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}$', cand):
+                    return cand
+
+    # 2. Look for standalone corporate entity names: "ABC Ltd", "XYZ Pvt Ltd", "Acme Corp", "Dell Technologies"
+    corp_match = re.search(
+        r'\b([A-Z0-9][A-Za-z0-9&.,\'\-\s]{1,40}\b(?:Pvt\.?\s*Ltd\.?|Private\s+Limited|Ltd\.?|Inc\.?|LLC|Corp\.?|Corporation|Technologies|Enterprises|Solutions))\b',
+        q
+    )
+    if corp_match:
+        cand = corp_match.group(1).strip().strip(",.-")
+        if cand and cand.lower() not in stop_words:
+            return cand
+
+    return None
+
+
+def validate_query_entity_grounding(user_query: str, evidence: dict) -> Dict[str, Any]:
+    """
+    Intelligent entity-grounding validation before LLM synthesis.
+    Validates requested entity and document references against retrieved structured evidence,
+    accurately distinguishing between seller/vendor and buyer/customer roles.
+    """
+    inv = evidence.get("invoice") or {}
+    po = evidence.get("purchase_order") or {}
+    grn = evidence.get("grn") or {}
+    bank = evidence.get("bank_statement") or {}
+    act_vendor = evidence.get("vendor_name") or inv.get("vendor_name") or po.get("vendor_name")
+    act_customer = evidence.get("customer_name") or inv.get("customer_name") or po.get("customer_name") or inv.get("bill_to")
+    act_inv_num = inv.get("invoice_number")
+    act_po_num = po.get("po_number")
+
+    req_entity = _extract_requested_vendor(user_query)
+
+    # Check invoice number in query
+    req_inv_matches = re.findall(r'\b(?:INV|invoice|tax\s+invoice)\b[#\s_:-]*([a-zA-Z0-9\-_]{3,20})\b', user_query, re.I)
+    req_inv = req_inv_matches[0] if req_inv_matches else None
+    if not req_inv:
+        digit_m = re.findall(r'\b\d{5,6}\b', user_query)
+        if digit_m and any(k in user_query.lower() for k in ["invoice", "inv"]):
+            req_inv = digit_m[0]
+
+    # Check PO number in query
+    req_po_matches = re.findall(r'\b(?:PO|purchase\s+order)\b[#\s_:-]*([a-zA-Z0-9\-_]{3,20})\b', user_query, re.I)
+    req_po = req_po_matches[0] if req_po_matches else None
+
+    is_vendor_match = False
+    is_customer_match = False
+    vendor_mismatch = False
+
+    if req_entity:
+        if act_vendor and _are_vendors_matching(req_entity, act_vendor):
+            is_vendor_match = True
+        elif act_customer and _are_vendors_matching(req_entity, act_customer):
+            is_customer_match = True
+        elif act_vendor:
+            vendor_mismatch = True
+
+    def _norm_code(c):
+        return re.sub(r'[^a-zA-Z0-9]', '', str(c or '')).lower()
+
+    inv_mismatch = False
+    if req_inv and act_inv_num:
+        if _norm_code(req_inv) != _norm_code(act_inv_num):
+            inv_mismatch = True
+
+    po_mismatch = False
+    if req_po and act_po_num:
+        if _norm_code(req_po) != _norm_code(act_po_num):
+            po_mismatch = True
+
+    has_mismatch = vendor_mismatch or inv_mismatch or po_mismatch
+
+    matching_aspects = []
+    mismatch_aspects = []
+
+    # Find line items
+    all_line_descs = []
+    for doc in (inv, po, grn):
+        for item in (doc.get("line_items") or []):
+            desc = item.get("description") or item.get("item_name")
+            if desc and desc not in all_line_descs:
+                all_line_descs.append(desc)
+
+    if all_line_descs:
+        matching_aspects.append(f"Purchased item(s): {', '.join(all_line_descs[:3])}")
+    if act_inv_num and not inv_mismatch:
+        matching_aspects.append(f"Invoice Number: {act_inv_num}")
+    if inv.get("total_amount"):
+        matching_aspects.append(f"Invoice Total: {_format_amount(inv.get('total_amount'))}")
+    if act_vendor:
+        matching_aspects.append(f"Seller / Vendor: {act_vendor}")
+    if act_customer:
+        matching_aspects.append(f"Customer (Bill To): {act_customer}")
+
+    if vendor_mismatch:
+        mismatch_aspects.append(
+            f"Vendor Mismatch: You requested records for entity '{req_entity}', but the retrieved records (Invoice {act_inv_num or 'N/A'}) are issued by vendor '{act_vendor}'. No records exist for '{req_entity}'."
+        )
+    if inv_mismatch:
+        mismatch_aspects.append(
+            f"Invoice Number Mismatch: Requested Invoice '{req_inv}', but retrieved Invoice is '{act_inv_num}'."
+        )
+    if po_mismatch:
+        mismatch_aspects.append(
+            f"PO Number Mismatch: Requested PO '{req_po}', but retrieved PO is '{act_po_num}'."
+        )
+
+    explanation_lines = []
+    if vendor_mismatch:
+        inv_str = f"Invoice {act_inv_num}" if act_inv_num else "The retrieved record"
+        items_str = f" for {all_line_descs[0]}" if all_line_descs else ""
+        explanation_lines.append(
+            f"Entity Mismatch Detected: {inv_str}{items_str} was issued by vendor '{act_vendor}', not '{req_entity}'."
+        )
+        explanation_lines.append(
+            f"The retrieved evidence shows that '{act_vendor}' is the actual vendor on record. No evidence or invoices were found for '{req_entity}'."
+        )
+        if inv.get("total_amount"):
+            inv_total = _format_amount(inv.get("total_amount"))
+            sub_str = f" (Subtotal: {_format_amount(inv.get('subtotal'))}, Tax: {_format_amount(inv.get('tax_amount'))})" if inv.get("subtotal") else ""
+            date_str = f", dated {inv.get('invoice_date')}" if inv.get('invoice_date') else ""
+            explanation_lines.append(
+                f"For the matched transaction ({inv_str}), the total amount is {inv_total}{sub_str}{date_str}."
+            )
+    elif is_customer_match:
+        inv_str = f"Invoice {act_inv_num}" if act_inv_num else "The retrieved invoice"
+        items_str = f" for {all_line_descs[0]}" if all_line_descs else ""
+        inv_total = _format_amount(inv.get("total_amount")) if inv.get("total_amount") else ""
+        explanation_lines.append(
+            f"{inv_str}{items_str} was issued by vendor '{act_vendor}' to customer '{act_customer}' (Bill To) for a total of {inv_total}."
+        )
+    elif inv_mismatch:
+        explanation_lines.append(
+            f"Invoice Mismatch: Requested invoice '{req_inv}' was not found. The retrieved evidence corresponds to Invoice '{act_inv_num}' from vendor '{act_vendor}'."
+        )
+
+    return {
+        "has_mismatch": has_mismatch,
+        "vendor_mismatch": vendor_mismatch,
+        "is_customer_match": is_customer_match,
+        "is_vendor_match": is_vendor_match,
+        "invoice_mismatch": inv_mismatch,
+        "po_mismatch": po_mismatch,
+        "requested_vendor": req_entity if vendor_mismatch else None,
+        "requested_entity": req_entity,
+        "actual_vendor": act_vendor,
+        "actual_customer": act_customer,
+        "requested_invoice": req_inv,
+        "actual_invoice": act_inv_num,
+        "requested_po": req_po,
+        "actual_po": act_po_num,
+        "matching_aspects": matching_aspects,
+        "mismatch_aspects": mismatch_aspects,
+        "deterministic_explanation": " ".join(explanation_lines) if explanation_lines else ""
+    }
+
+
+def _sanitize_entity_mismatch_answer(text: str, validation_result: Optional[Dict[str, Any]]) -> str:
+    """Ensure LLM response never claims a requested mismatch vendor issued the invoice or conflates vendors."""
+    if not text or not validation_result or not validation_result.get("has_mismatch"):
+        return text
+    if validation_result.get("is_customer_match"):
+        return text
+
+    req_v = validation_result.get("requested_vendor")
+    act_v = validation_result.get("actual_vendor")
+    det_exp = validation_result.get("deterministic_explanation") or ""
+
+    if validation_result.get("vendor_mismatch") and req_v and act_v:
+        # 1. Replace any blended "(requested_vendor) (vendor name: ...)"
+        blended_pattern = re.compile(
+            rf"(?i)\b{re.escape(req_v)}\s*\(\s*(?:vendor\s+name\s*:\s*)?[^)]+\)",
+            re.IGNORECASE
+        )
+        text = blended_pattern.sub(f"{act_v} (requested entity '{req_v}' does not match vendor)", text)
+
+        # 2. Replace "{req_v} issued/provided/billed/sold" -> "{act_v} issued"
+        issued_pattern = re.compile(
+            rf"(?i)\b{re.escape(req_v)}\s+(?:issued|provided|billed|created|submitted|sold)\b",
+            re.IGNORECASE
+        )
+        text = issued_pattern.sub(f"{act_v} issued", text)
+
+        # 3. If the answer does not acknowledge the mismatch or still has misleading attribution
+        if req_v.lower() in text.lower() and not any(k in text.lower() for k in ["mismatch", f"not {req_v.lower()}", f"no records for {req_v.lower()}", "does not match"]):
+            return det_exp
+
+    return text
+
+
+def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict] = None, validation_result: Optional[dict] = None) -> str:
     """Deterministic fallback QA answer grounded strictly in retrieved evidence when LLM is unavailable."""
+    if validation_result and validation_result.get("has_mismatch") and validation_result.get("deterministic_explanation"):
+        return validation_result["deterministic_explanation"]
+
     q_lower = (user_query or "").lower()
     inv = evidence.get("invoice") or {}
     po = evidence.get("purchase_order") or {}
     grn = evidence.get("grn") or {}
     bank = evidence.get("bank_statement") or {}
     vendor = evidence.get("vendor_name") or inv.get("vendor_name") or po.get("vendor_name") or "Vendor"
+    customer = evidence.get("customer_name") or inv.get("customer_name") or po.get("customer_name") or inv.get("bill_to")
+
+    # If asking for evidence / laptop purchase / customer purchase
+    if any(k in q_lower for k in ["evidence", "purchase", "laptop", "buy", "order", "invoice"]) and inv:
+        num = inv.get("invoice_number", "N/A")
+        tot = _format_amount(inv.get("total_amount"))
+        sub = _format_amount(inv.get("subtotal"))
+        tax = _format_amount(inv.get("tax_amount"))
+        lines = inv.get("line_items") or []
+        items_str = f" for {lines[0].get('description')}" if lines else ""
+        cust_str = f" to customer {customer} (Bill To)" if customer else ""
+        return f"Invoice {num}{items_str} was issued by vendor {vendor}{cust_str} for a total of {tot} (Subtotal: {sub}, Tax: {tax})."
 
     if any(k in q_lower for k in ["total", "amount", "subtotal", "tax", "price"]) and inv:
         tot = inv.get("total_amount")
@@ -540,7 +816,8 @@ def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict]
         tax = inv.get("tax_amount")
         if tot is not None:
             breakdown = f" (Subtotal: {_format_amount(sub)}, Tax: {_format_amount(tax)})" if sub is not None and tax is not None else ""
-            return f"The total of Invoice {num} is {_format_amount(tot)}{breakdown} from vendor {vendor}."
+            cust_str = f" to customer {customer}" if customer else ""
+            return f"The total of Invoice {num} is {_format_amount(tot)}{breakdown} from vendor {vendor}{cust_str}."
     if any(k in q_lower for k in ["quantity", "qty", "received", "grn", "units"]) and grn:
         lines = grn.get("line_items") or []
         if lines:
@@ -562,27 +839,51 @@ def _build_template_answer(user_query: str, evidence: dict, plan: Optional[dict]
     return "The requested information is not available in the retrieved evidence."
 
 
-def _build_result_metadata(evidence: dict, bundle_id: Optional[str]) -> dict:
+def _build_result_metadata(evidence: dict, bundle_id: Optional[str], validation_result: Optional[dict] = None) -> dict:
     """Build structured result metadata for frontend display cards."""
     inv = evidence.get("invoice") or {}
     po = evidence.get("purchase_order") or {}
     grn = evidence.get("grn") or {}
     bank = evidence.get("bank_statement") or {}
     vendor = evidence.get("vendor_name") or inv.get("vendor_name") or po.get("vendor_name")
+    customer = evidence.get("customer_name") or inv.get("customer_name") or po.get("customer_name") or inv.get("bill_to")
 
     found = bool(inv or po or grn or bank)
-    status = "VERIFIED" if found else "NOT FOUND"
-    return {
+    if not found:
+        status = "NOT FOUND"
+        verdict = "NOT FOUND"
+    elif validation_result and validation_result.get("has_mismatch"):
+        status = "MISMATCH"
+        verdict = "MISMATCH"
+    else:
+        status = "VERIFIED"
+        verdict = "VERIFIED"
+
+    meta = {
         "found": found,
         "status": status,
+        "verdict": verdict,
         "ambiguous": False,
         "bundle_id": bundle_id,
         "vendor_name": vendor,
+        "customer_name": customer,
         "invoice_number": inv.get("invoice_number"),
         "po_number": po.get("po_number"),
         "grn_number": grn.get("grn_number"),
         "total_amount": inv.get("total_amount") or po.get("total_amount"),
     }
+    if validation_result and validation_result.get("has_mismatch"):
+        meta["has_mismatch"] = True
+        meta["vendor_mismatch"] = validation_result.get("vendor_mismatch", False)
+        meta["invoice_mismatch"] = validation_result.get("invoice_mismatch", False)
+        meta["po_mismatch"] = validation_result.get("po_mismatch", False)
+        meta["requested_vendor"] = validation_result.get("requested_vendor")
+        meta["actual_vendor"] = validation_result.get("actual_vendor")
+        meta["actual_customer"] = validation_result.get("actual_customer")
+        meta["matching_aspects"] = validation_result.get("matching_aspects", [])
+        meta["mismatch_aspects"] = validation_result.get("mismatch_aspects", [])
+
+    return meta
 
 
 def _build_intent_system_prompt(intent: str = "") -> str:
@@ -599,25 +900,30 @@ Return only the final answer text."""
 
 
 def _is_verification_query(user_query: str, plan: Optional[dict], verification_info: Optional[dict]) -> bool:
+    q = (user_query or "").lower()
+    verif_keywords = [
+        "verify", "verification", "3-way", "4-way", "three-way", "four-way", "compare",
+        "match", "failed", "flagged", "discrepanc", "mismatch", "variance", "why was", "why is",
+        "why were", "paid", "difference", "reconcil", "error", "issue"
+    ]
+    if any(k in q for k in verif_keywords) and verification_info and (verification_info.get("checks") or verification_info.get("verdict") or verification_info.get("discrepancies")):
+        return True
     if plan:
         if plan.get("verification_required") is True:
             return True
         if plan.get("intent") in ("comparison", "verification", "full_audit", "investigation"):
             return True
-        if plan.get("intent") in ("lookup", "field_lookup") and plan.get("verification_required") is False:
-            return False
-    q = (user_query or "").lower()
-    verif_keywords = [
-        "verify", "verification", "3-way", "4-way", "three-way", "four-way", "compare",
-        "match", "failed", "flagged", "discrepanc", "mismatch", "variance", "why was", "why is",
-        "paid", "difference", "reconcil", "error", "issue"
-    ]
-    if any(k in q for k in verif_keywords) and verification_info and (verification_info.get("checks") or verification_info.get("verdict") or verification_info.get("discrepancies")):
-        return True
     return False
 
 
-def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = None, verification_info: Optional[dict] = None, bundle_id: Optional[str] = None) -> str:
+def _synthesize_answer(
+    user_query: str,
+    evidence: dict,
+    plan: Optional[dict] = None,
+    verification_info: Optional[dict] = None,
+    bundle_id: Optional[str] = None,
+    validation_result: Optional[dict] = None
+) -> str:
     """Synthesize plain-English QA answer via local Ollama strictly grounded in dynamically prepared evidence & verification results."""
     synth_start = time.time()
     is_verif = _is_verification_query(user_query, plan, verification_info)
@@ -665,13 +971,32 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
                 "State clearly: The item was NOT flagged. All 3-way/4-way verification checks passed clean with zero discrepancies."
             )
 
+        mismatch_mandate = ""
+        if validation_result and validation_result.get("has_mismatch"):
+            det_exp = validation_result.get("deterministic_explanation") or ""
+            mismatch_items = "; ".join(validation_result.get("mismatch_aspects") or [])
+            matching_items = "; ".join(validation_result.get("matching_aspects") or [])
+            mismatch_mandate = (
+                f"\n\nCRITICAL DETERMINISTIC ENTITY VALIDATION RESULT:\n"
+                f"{det_exp}\n"
+                f"- Flagged Discrepancy: {mismatch_items}\n"
+                f"- Matching Details: {matching_items}\n\n"
+                f"MANDATORY INSTRUCTIONS:\n"
+                f"1. You MUST explicitly state in the opening sentence that the retrieved invoice/purchase was issued by '{validation_result.get('actual_vendor')}', NOT '{validation_result.get('requested_vendor')}'.\n"
+                f"2. You MUST NEVER state or imply that '{validation_result.get('requested_vendor')}' issued the invoice or is the vendor.\n"
+                f"3. You MUST NEVER equate or combine the requested vendor and actual vendor (e.g. do not say '{validation_result.get('requested_vendor')} (vendor name: {validation_result.get('actual_vendor')})').\n"
+                f"4. Clearly distinguish the matching evidence ({matching_items}) from the mismatching vendor name ({mismatch_items}).\n"
+                f"5. Explicitly state that no records or invoices exist for '{validation_result.get('requested_vendor')}'."
+            )
+
         user_prompt = (
             f"User question: {json.dumps(user_query)}\n\n"
             f"Authoritative Deterministic Verification Results (SOURCE OF TRUTH):\n{deterministic_verif_report}{extra_context}\n\n"
             f"Provide a complete, factually grounded answer directly answering the user's question using the authoritative verification findings above. "
-            f"State what was verified, exact amounts in ₹, document references, and any discrepancies or failure reasons clearly. "
+            f"State what was verified, exact amounts in ₹, exact document references (e.g. Invoice #200003 without truncation), and any discrepancies or failure reasons clearly. "
+            f"Accurately distinguish the vendor/seller from the buyer/customer (Bill To). "
             f"If the user asks why an item was flagged or failed but all verification checks passed with 0 risk score, explicitly correct the premise and explain the clean verification. "
-            f"If no failure reason or discrepancy exists in the retrieved evidence, state that clearly and do not invent any reasons.{clean_mandate}"
+            f"If no failure reason or discrepancy exists in the retrieved evidence, state that clearly and do not invent any reasons.{clean_mandate}{mismatch_mandate}"
         )
 
         # Dynamic token budget based on query requirements
@@ -685,13 +1010,45 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
         intent = plan.get("intent", "lookup") if plan else "lookup"
         system_prompt = _build_intent_system_prompt(intent)
         evidence_json = json.dumps(filtered_evidence, indent=2)
+
+        clean_mandate = ""
+        if is_clean_verif and any(k in q_lower for k in ["flagged", "failed", "why was", "why is", "why were", "issue", "discrepanc", "wrong", "reject", "anomaly"]):
+            clean_mandate = (
+                "\n\nCRITICAL MANDATE: The user's question asks why this was flagged or failed, but the authoritative deterministic verification result is CLEAN (Risk Score: 0/100, 0 discrepancies, all checks passed). "
+                "You MUST begin your response by explicitly stating that the transaction/invoice was NOT flagged. "
+                "Do NOT write 'was flagged because ...'. "
+                "State clearly: The item was NOT flagged. All 3-way/4-way verification checks passed clean with zero discrepancies."
+            )
+
+        mismatch_mandate = ""
+        if validation_result and validation_result.get("has_mismatch"):
+            det_exp = validation_result.get("deterministic_explanation") or ""
+            mismatch_items = "; ".join(validation_result.get("mismatch_aspects") or [])
+            matching_items = "; ".join(validation_result.get("matching_aspects") or [])
+            mismatch_mandate = (
+                f"\n\nCRITICAL DETERMINISTIC ENTITY VALIDATION RESULT:\n"
+                f"{det_exp}\n"
+                f"- Flagged Discrepancy: {mismatch_items}\n"
+                f"- Matching Details: {matching_items}\n\n"
+                f"MANDATORY INSTRUCTIONS:\n"
+                f"1. You MUST explicitly state in the opening sentence that the retrieved invoice/purchase was issued by '{validation_result.get('actual_vendor')}', NOT '{validation_result.get('requested_vendor')}'.\n"
+                f"2. You MUST NEVER state or imply that '{validation_result.get('requested_vendor')}' issued the invoice or is the vendor.\n"
+                f"3. You MUST NEVER equate or combine the requested vendor and actual vendor (e.g. do not say '{validation_result.get('requested_vendor')} (vendor name: {validation_result.get('actual_vendor')})').\n"
+                f"4. Clearly distinguish the matching evidence ({matching_items}) from the mismatching vendor name ({mismatch_items}).\n"
+                f"5. Explicitly state that no records or invoices exist for '{validation_result.get('requested_vendor')}'."
+            )
+
         user_prompt = (
             f"User question: {json.dumps(user_query)}\n\n"
             f"Evidence Table:\n{evidence_json}\n\n"
-            f"Provide a complete, factually grounded answer directly answering the question using only the verified evidence above. "
-            f"State exact document numbers, values in ₹ (with subtotal and tax breakdown if available), dates, and vendor names."
+            f"Provide a complete, factually grounded answer directly answering the question using only the verified evidence above.\n"
+            f"Grounding guidelines:\n"
+            f"- Accurately distinguish the vendor/seller who issued the invoice from the customer/buyer ('Bill To' party) who placed the order.\n"
+            f"- If the company in the query is the customer/buyer (e.g. TECHGURUPLUS SOLUTIONS PVT LTD), explain this distinction accurately without claiming the customer is absent.\n"
+            f"- Preserve exact document numbers (e.g. Invoice #200003; do NOT truncate or alter digits to 20000) and exact amounts (e.g. ₹4,24,800.00 total, ₹360,000.00 subtotal, ₹64,800.00 tax).\n"
+            f"- Do not generate contradictory statements.{clean_mandate}{mismatch_mandate}"
         )
-        max_tokens = 200
+        max_tokens = 450
 
     logger.info(f"[QueryAgent] Dynamic output budget: {max_tokens} tokens for query: '{user_query}'")
 
@@ -727,6 +1084,7 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
                 logger.info(f"[QueryAgent] Ollama ({ollama_model}) raw response: {raw[:300]}")
                 cleaned = _clean_answer_text(raw)
                 cleaned = _sanitize_clean_verification_answer(cleaned, is_clean_verif)
+                cleaned = _sanitize_entity_mismatch_answer(cleaned, validation_result)
                 REFUSAL_PATTERNS = [
                     "not available in the retrieved evidence",
                     "i cannot answer",
@@ -772,6 +1130,7 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
                     if raw:
                         cleaned = _clean_answer_text(raw)
                         cleaned = _sanitize_clean_verification_answer(cleaned, is_clean_verif)
+                        cleaned = _sanitize_entity_mismatch_answer(cleaned, validation_result)
                         if cleaned:
                             logger.info("[QueryAgent] Using OpenRouter LLM answer")
                             return cleaned
@@ -779,6 +1138,10 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
             logger.warning(f"[QueryAgent] OpenRouter synthesis error: {exc}")
 
     # ── 3. Deterministic Source-of-Truth Fallback ───────────────────────────
+    if validation_result and validation_result.get("has_mismatch") and validation_result.get("deterministic_explanation"):
+        logger.info("[QueryAgent] Returning deterministic entity mismatch explanation")
+        return validation_result["deterministic_explanation"]
+
     if is_verif and deterministic_verif_report:
         logger.info("[QueryAgent] Returning deterministic fallback summary")
         inv = evidence.get("invoice") or {}
@@ -788,7 +1151,7 @@ def _synthesize_answer(user_query: str, evidence: dict, plan: Optional[dict] = N
         return f"Deterministic Verification Status: {st}. Invoice {inv.get('invoice_number', 'N/A')}, PO {po.get('po_number', 'N/A')}, and GRN {grn.get('grn_number', 'N/A')} were analyzed against 3-way matching rules."
 
     logger.warning("[QueryAgent] LLM generation unavailable — returning deterministic template answer")
-    template_facts = _build_template_answer(user_query, evidence, plan)
+    template_facts = _build_template_answer(user_query, evidence, plan, validation_result)
     if is_verif and verification_info and verification_info.get("verdict"):
         verdict_str = verification_info.get("verdict", "").upper()
         return f"Deterministic Verification Verdict: {verdict_str}\n\n{template_facts}"
@@ -920,18 +1283,31 @@ def _synthesize_status_answer(user_query: str, bundles_list: List[dict]) -> str:
 
 def _is_status_query(user_query: str, retrieval_plan: Optional[dict], bundle_id: Optional[str]) -> bool:
     """
-    Determine if this is a system-wide bundle status/cross-bundle query.
+    Determine if this is a genuine system-wide bundle status / cross-bundle query.
     """
     if bundle_id:
         return False
-    q = (user_query or "").lower()
-    status_keywords = [
-        "all bundles", "flagged", "show bundles", "list bundles", "bundles are",
-        "high risk", "critical", "which bundles", "how many bundles",
-        "show all", "list all", "status", "overview", "all amount mismatches",
-        "show me all", "all discrepancies"
+
+    # If the retrieval plan identified a specific bundle or document reference, it is NOT a status query
+    if retrieval_plan:
+        bundle_ref = retrieval_plan.get("bundle_reference")
+        if bundle_ref and isinstance(bundle_ref, str) and bundle_ref.strip() and bundle_ref.strip().lower() not in ("none", "null"):
+            return False
+
+    # If specific domain entity tokens (TXN, INV, PO, GRN, UUID, etc.) exist in the query, it is NOT a cross-bundle status query
+    from app.services.entity_resolver import extract_potential_entities
+    if extract_potential_entities(user_query):
+        return False
+
+    q = (user_query or "").lower().strip()
+    status_phrases = [
+        "all bundles", "show bundles", "list bundles", "bundles are",
+        "which bundles", "how many bundles", "show all", "list all",
+        "system status", "overview", "all amount mismatches",
+        "show me all", "all discrepancies", "all flagged", "flagged bundles",
+        "flagged transactions"
     ]
-    return any(k in q for k in status_keywords)
+    return any(k in q for k in status_phrases)
 
 
 def _build_structured_verification_summary(
@@ -941,6 +1317,7 @@ def _build_structured_verification_summary(
     llm_answer: Optional[str] = None,
     db = None,
     required_documents: Optional[List[str]] = None,
+    validation_result: Optional[dict] = None,
 ) -> Optional[dict]:
     if not verification_info or not verification_info.get("checks"):
         return None
@@ -950,6 +1327,10 @@ def _build_structured_verification_summary(
     verdict = verification_info.get("verdict")
     risk_score = float(verification_info.get("risk_score") or 0.0)
     overall_status = verification_info.get("overall_status") or _determine_overall_status(verdict, checks, risk_score)
+
+    if validation_result and validation_result.get("has_mismatch"):
+        overall_status = "MISMATCH"
+        verdict = "MISMATCH"
 
     passed_count = sum(1 for c in checks if (c.get("status") or "").lower() == "pass")
     failed_count = sum(1 for c in checks if (c.get("status") or "").lower() == "fail")
@@ -1051,7 +1432,18 @@ def _build_structured_verification_summary(
                 "explanation": desc + (f" Action: {d.get('recommended_action')}" if d.get('recommended_action') else "")
             })
 
-    if overall_status == "VERIFIED":
+    if validation_result and validation_result.get("has_mismatch"):
+        overall_status = "MISMATCH"
+        verdict = "MISMATCH"
+        conclusion = validation_result.get("deterministic_explanation") or conclusion
+        for m_asp in validation_result.get("mismatch_aspects", []):
+            findings_list.insert(0, {
+                "check_name": "Entity Validation Mismatch",
+                "status": "fail",
+                "severity": "HIGH",
+                "explanation": m_asp,
+            })
+    elif overall_status == "VERIFIED":
         conclusion = "The 3-way match between Invoice, Purchase Order, and GRN is fully verified and consistent with no discrepancies. The transaction is validated and approved for processing."
     elif overall_status == "FAILED":
         conclusion = "Verification failed due to discrepancies identified during deterministic multi-way matching. Payment should be held pending investigation and resolution of the noted exceptions."
@@ -1139,28 +1531,34 @@ def query_node(state: BundleState) -> Dict[str, Any]:
         known_vendors = []
         try:
             vendors = db.query(Vendor).all()
-            known_vendors = [v.name_normalized for v in vendors if v.name_normalized]
+            seen = set()
+            for v in vendors:
+                v_name = (v.name or v.name_normalized or "").strip()
+                if v_name and v_name.lower() not in seen:
+                    seen.add(v_name.lower())
+                    known_vendors.append(v_name.title())
         except Exception:
             pass
         finally:
             db.close()
 
-        vendor_list_str = ", ".join(known_vendors) if known_vendors else "(none found)"
+        vendor_hint = f" Known active vendors in the system: {', '.join(known_vendors[:5])}." if known_vendors else ""
         not_found_answer = (
-            f"No matching vendor or document was found for your query. "
-            f"Known vendors currently in the system: {vendor_list_str}. "
-            f"Please verify the vendor name or provide a specific PO / Invoice number."
+            f"No matching audit bundle, invoice, purchase order, or vendor details were found for your query: \"{user_query}\".{vendor_hint} "
+            f"Please verify the invoice number, PO number, or vendor name and try again."
         )
         logger.warning(f"[QueryAgent] No bundle resolved for query: '{user_query}'.")
 
         report_output = {
             "query": user_query,
-            "query_type": "field_lookup",
-            "answer_type": "field_lookup",
+            "query_type": "not_found",
+            "answer_type": "not_found",
+            "report_type": "not_found",
             "bundle_id": None,
             "bundle": None,
             "answer": not_found_answer,
-            "result": {"found": False, "status": "NOT FOUND", "ambiguous": False, "bundle_id": None},
+            "verdict": "NOT FOUND",
+            "result": {"found": False, "status": "NOT FOUND", "verdict": "NOT FOUND", "ambiguous": False, "bundle_id": None},
             "evidence": {},
             "verification_checks": [],
             "source_documents": [],
@@ -1178,7 +1576,6 @@ def query_node(state: BundleState) -> Dict[str, Any]:
             bundles_list = _fetch_status_bundles(db, query_filters, allowed_bundle_ids=authorized_bundle_ids)
         finally:
             db.close()
-
 
         status_answer = _synthesize_status_answer(user_query, bundles_list)
 
@@ -1229,6 +1626,14 @@ def query_node(state: BundleState) -> Dict[str, Any]:
             db.close()
 
     evidence_table = evidence_table or {}
+
+    # Deterministic entity-grounding validation
+    validation_result = validate_query_entity_grounding(user_query, evidence_table)
+    if validation_result.get("has_mismatch"):
+        logger.warning(
+            f"[QueryAgent] Entity mismatch detected: "
+            f"Requested vendor='{validation_result.get('requested_vendor')}', Actual vendor='{validation_result.get('actual_vendor')}'"
+        )
 
     state_checks = state.get("verification_checks") or []
     state_discrepancies = state.get("discrepancies") or []
@@ -1314,8 +1719,8 @@ def query_node(state: BundleState) -> Dict[str, Any]:
             "discrepancies": discrepancies_list,
         }
 
-    answer = _synthesize_answer(user_query, evidence_table, retrieval_plan, verification_info, bundle_id)
-    result_metadata = _build_result_metadata(evidence_table, bundle_id)
+    answer = _synthesize_answer(user_query, evidence_table, retrieval_plan, verification_info, bundle_id, validation_result)
+    result_metadata = _build_result_metadata(evidence_table, bundle_id, validation_result)
 
     # Intent normalization
     intent = "field_lookup"
@@ -1346,6 +1751,7 @@ def query_node(state: BundleState) -> Dict[str, Any]:
                 llm_answer=answer,
                 db=db,
                 required_documents=req_docs,
+                validation_result=validation_result,
             )
     except Exception as exc:
         logger.warning(f"[QueryAgent] Error building verification summary: {exc}")
@@ -1360,7 +1766,9 @@ def query_node(state: BundleState) -> Dict[str, Any]:
         "bundle_id": bundle_id,
         "bundle": bundle_meta,
         "answer": answer,
+        "verdict": result_metadata.get("verdict", "VERIFIED"),
         "result": result_metadata,
+        "entity_validation": validation_result,
         "verification_summary": verif_summary if is_verif else None,
         "financials": (verif_summary.get("financials") if verif_summary and is_verif else None),
         "document_matches": (verif_summary.get("document_matches") if verif_summary and is_verif else None),
